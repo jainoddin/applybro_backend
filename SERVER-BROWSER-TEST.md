@@ -19,4 +19,6 @@ Exit codes: 0 = login form loaded, 2 = access not verified/blocked, 1 = runtime 
 
 Do not deploy this as a restarting production worker: it exits after one probe. A real always-on worker needs suitable hosting, separate per-user server sessions, authentication/OTP handling and verified application outcomes. Existing local Chrome profiles in `secrets/` must never be pushed or baked into an image. No hosting resources are created by this package.
 
+For a temporary free Render Web Service, override the Docker command with `xvfb-run -a node scripts/server-browser-probe.cjs --serve`. This runs exactly one access probe at startup, closes the browser, and serves a sanitized cached result at `/result`; `/health` is a process health check only. It has no browser-control, credentials, screenshots, or application endpoints. It sleeps according to the free hosting policy and is not an always-on worker. No application environment secrets are needed.
+
 Official headed Linux setup: https://playwright.dev/docs/ci#running-headed
