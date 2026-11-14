@@ -1,7 +1,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
-const { profileState, syncResume, profileUrl, isNaukriJob } = require('./naukri-flow.cjs');
+const { profileState, syncResume, profileUrl, isNaukriJob, openProfile } = require('./naukri-flow.cjs');
 const { observe, execute } = require('./cloud-browser.cjs');
 const resume = { fileName: 'fixture-resume.pdf', mimeType: 'application/pdf', fileBytes: Buffer.from('%PDF-fixture-only') };
 async function fixture(html, url = profileUrl) {
@@ -13,6 +13,11 @@ async function fixture(html, url = profileUrl) {
   return { browser, page };
 }
 const profile = '<h2>Resume</h2><h2>Key Skills</h2><label>Resume<input id="attachCV" type="file"></label><div id="filename"></div>';
+test('a blocked portal is reported explicitly, never as a user login request', async () => {
+  let calls=0;
+  await assert.rejects(openProfile({goto:async()=>{calls++;return {status:()=>403};}}), error=>error.portalBlocked===true&&/HTTP 403/.test(error.message));
+  assert.equal(calls,1);
+});
 test('only exact HTTPS Naukri job URLs enter the native flow', () => {
   assert.ok(isNaukriJob('https://www.naukri.com/job-listings-fixture-123'));
   for (const value of ['https://www.naukri.com.attacker.invalid/job-listings-123', 'http://www.naukri.com/job-listings-123', profileUrl]) assert.equal(isNaukriJob(value), false);

@@ -3,16 +3,18 @@ const {randomUUID}=require('node:crypto');
 const {chromium}=require('playwright');
 const {NestFactory}=require('@nestjs/core');const {AppModule}=require('../dist/app.module');
 const {PrismaService}=require('../dist/prisma/prisma.service');const {CloudAgentService}=require('../dist/agent/agent.service');
-const {approvedUrl,agentKey,seal,unseal,factsFor,terminalStates}=require('../dist/agent/agent-policy');
+const {approvedUrl,agentKey,seal,unseal,factsFor,terminalStates,localPilotEnabled}=require('../dist/agent/agent-policy');
 const {observe,execute,plan,allowNetwork,submitLike,element,targetAt}=require('./cloud-browser.cjs');
 const {claim,heartbeat,recover}=require('./cloud-queue.cjs');
 const {reviewWindow,waitForReview}=require('./agent-pacing.cjs');
-const {profileUrl,profileState,syncResume,isNaukriJob}=require('./naukri-flow.cjs');
+const {profileState,syncResume,isNaukriJob,openProfile}=require('./naukri-flow.cjs');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const owner=randomUUID();let stopping=false;
 process.on('SIGTERM',()=>{stopping=true;});process.on('SIGINT',()=>{stopping=true;});
 async function main(){
  if(process.env.CLOUD_AGENT_ENABLED!=='true'){console.log('Hosted agent disabled. Configure it before starting the worker.');return;}
+ const localPilot=localPilotEnabled();
+ if(process.env.CLOUD_AGENT_LOCAL_PILOT==='true'&&!localPilot)throw Error('Local pilot requires a loopback HTTP website origin.');
  agentKey();
  const app=await NestFactory.createApplicationContext(AppModule,{logger:['error','warn']});const db=app.get(PrismaService),service=app.get(CloudAgentService);
  const browser=process.env.CLOUD_AGENT_BROWSER_WS?await chromium.connect(process.env.CLOUD_AGENT_BROWSER_WS):await chromium.launch({headless:true,...(process.env.CLOUD_AGENT_CHROME_PATH?{executablePath:process.env.CLOUD_AGENT_CHROME_PATH}:{})});
@@ -76,17 +78,17 @@ async function main(){
    if(context.routeWebSocket)await context.routeWebSocket('**/*',socket=>socket.close());
    const jobUrl=expectedJob.matchReasons?.url||initial.url;
    if(isNaukriJob(jobUrl)){
-    await page.goto(profileUrl,{waitUntil:'domcontentloaded',timeout:30000});
+    await openProfile(page);
     while(!(await profileState(page)).signedIn){
      if(!await waitForUser('Sign in to Naukri in this private cloud browser, complete OTP/CAPTCHA, then Continue. Your local Naukri login is separate.'))return;
-     await page.goto(profileUrl,{waitUntil:'domcontentloaded',timeout:30000});
+     await openProfile(page);
     }
     // Native Apply uses Naukri's portal resume. Upload our actual stored file
     // first, and require a new success receipt before allowing any submission.
     let synced=false;
     for(let attempt=0;attempt<2&&!synced;attempt++){
      try{await syncResume(page,resume);await uploadSaved();await saveSession();await event(initial.id,'RESUME','Stored ApplyBro resume uploaded to the private Naukri profile; fresh portal upload receipt observed.');synced=true;}
-     catch(e){if(!await waitForUser(e.message))return;await page.goto(profileUrl,{waitUntil:'domcontentloaded',timeout:30000});}
+     catch(e){if(!await waitForUser(e.message))return;await openProfile(page);}
     }
     if(!synced){await update(initial.id,'FAILED','Naukri resume synchronization was not confirmed. No submission attempted.');return;}
    }
@@ -132,7 +134,7 @@ async function main(){
     await db.$executeRaw`UPDATE "AgentRun" SET "steps"="steps"+1,"url"=${new URL(page.url()).origin+new URL(page.url()).pathname},"updatedAt"=NOW() WHERE "id"=${r.id}`;
     await event(r.id,'ACTION',action.kind+' completed.');await saveSession();await sleep(1200);
    }
-  }catch(e){const r=await get(initial.id);if(e.retryable&&r?.state==='RUNNING'&&!r.submitReservedAt&&r.retryCount<3){const next=new Date(Date.now()+60000*2**r.retryCount);await db.$executeRaw`UPDATE "AgentRun" SET "state"='QUEUED',"retryCount"="retryCount"+1,"nextAttemptAt"=${next},"reason"='Model temporarily unavailable; bounded retry scheduled before submission.' WHERE "id"=${initial.id} AND "leaseOwner"=${owner}`;}else await update(initial.id,r?.state==='SUBMITTING'?'UNKNOWN':'FAILED','Browser or model service unavailable. No automatic retry after a possible submission.');}
+  }catch(e){const r=await get(initial.id);if(e.retryable&&r?.state==='RUNNING'&&!r.submitReservedAt&&r.retryCount<3){const next=new Date(Date.now()+60000*2**r.retryCount);await db.$executeRaw`UPDATE "AgentRun" SET "state"='QUEUED',"retryCount"="retryCount"+1,"nextAttemptAt"=${next},"reason"='Model temporarily unavailable; bounded retry scheduled before submission.' WHERE "id"=${initial.id} AND "leaseOwner"=${owner}`;}else await update(initial.id,r?.state==='SUBMITTING'?'UNKNOWN':'FAILED',e.portalBlocked?e.message:'Browser or model service unavailable. No automatic retry after a possible submission.');}
   finally{clearInterval(timer);await saveSession().catch(()=>{});await context?.close().catch(()=>{});await db.$executeRaw`UPDATE "AgentRun" SET "state"=CASE WHEN "state"='RUNNING' AND "submitReservedAt" IS NULL THEN 'QUEUED' WHEN "state"='SUBMITTING' THEN 'UNKNOWN' ELSE "state" END,"leaseOwner"=NULL,"leaseUntil"=NULL,"screen"=NULL,"interactiveUntil"=NULL WHERE "id"=${initial.id} AND "leaseOwner"=${owner}`;await db.$executeRaw`DELETE FROM "AgentUserLease" WHERE "userId"=${initial.userId} AND "runId"=${initial.id} AND "owner"=${owner}`;}
  }
  async function notices(){
@@ -141,7 +143,7 @@ async function main(){
   const rows=await db.$queryRaw`SELECT n.* FROM "AgentNotice" n JOIN "AgentRun" r ON r."id"=n."runId" WHERE n."state"='PENDING' AND n."attempts"<3 AND n."expiresAt">NOW() AND r."state"='WAITING_USER' ORDER BY n."createdAt" LIMIT 3`;
   for(const notice of rows){try{const data=unseal(notice.encrypted);const response=await fetch('https://api.resend.com/emails',{method:'POST',headers:{Authorization:'Bearer '+process.env.RESEND_API_KEY,'Content-Type':'application/json','Idempotency-Key':notice.id},signal:AbortSignal.timeout(10000),body:JSON.stringify({from:process.env.CLOUD_AGENT_EMAIL_FROM,to:[data.to],subject:'ApplyBro: your application needs verification',text:`Your application needs a portal login, verification, or an employer answer. Open ApplyBro to review the request.\n\nContinue securely (link valid for five minutes):\n${data.link}\n\nSign in to ApplyBro before entering verification details. Never reply with passwords or OTPs.`})});if(response.ok)await db.$executeRaw`UPDATE "AgentNotice" SET "state"='SENT',"sentAt"=NOW(),"encrypted"='' WHERE "id"=${notice.id}`;else await db.$executeRaw`UPDATE "AgentNotice" SET "attempts"="attempts"+1 WHERE "id"=${notice.id}`;}catch{await db.$executeRaw`UPDATE "AgentNotice" SET "attempts"="attempts"+1 WHERE "id"=${notice.id}`;}}
  }
- const active=new Set();let tick=0,modelReady=false,modelProbes=0,nextProbeAt=0;
+ const active=new Set();let tick=0,modelReady=false,modelProbes=0,nextProbeAt=0,pilotClaimed=false;
  async function probeModel(){let context;try{context=await browser.newContext();const page=await context.newPage();await page.setContent('<main><h1>Synthetic fixture</h1><label>Email<input name=email type=email></label></main>');await plan(await observe(page),await page.screenshot(),{email:'fixture@example.invalid'},[],{title:'Synthetic fixture',company:'No employer'});modelReady=true;}catch{console.log('Vision startup check unavailable; no employer tasks will run.');}finally{await context?.close();}}
  try{while(!stopping){
   if(!modelReady&&modelProbes<3&&Date.now()>=nextProbeAt){modelProbes++;await probeModel();nextProbeAt=Date.now()+60000*modelProbes;}
@@ -150,10 +152,10 @@ async function main(){
   await db.$executeRaw`DELETE FROM "AgentCommand" WHERE "expiresAt"<NOW()`;
   await db.$executeRaw`UPDATE "AgentNotice" SET "state"='EXPIRED',"encrypted"='' WHERE "state"='PENDING' AND "expiresAt"<NOW()`;
   if(!modelReady){await sleep(1000);continue;}
-  if(tick++%15===0){await notices();const prefs=await db.$queryRaw`UPDATE "AgentPreference" SET "nextRunAt"=NOW()+INTERVAL '6 hours' WHERE "enabled"=TRUE AND "nextRunAt"<=NOW() RETURNING "userId"`;for(const pref of prefs)try{await service.queueMatches(pref.userId);}catch{}}
-  while(active.size<Math.min(4,Math.max(1,Number(process.env.CLOUD_AGENT_CONCURRENCY)||1))){
+  if(tick++%15===0){await notices();if(!localPilot){const prefs=await db.$queryRaw`UPDATE "AgentPreference" SET "nextRunAt"=NOW()+INTERVAL '6 hours' WHERE "enabled"=TRUE AND "nextRunAt"<=NOW() RETURNING "userId"`;for(const pref of prefs)try{await service.queueMatches(pref.userId);}catch{}}}
+  while(active.size<(localPilot?1:Math.min(4,Math.max(1,Number(process.env.CLOUD_AGENT_CONCURRENCY)||1)))&&(!localPilot||!pilotClaimed)){
    const rows=await claim(db,owner);
-   if(!rows[0])break;const promise=run(rows[0]).catch(()=>{});active.add(promise);promise.finally(()=>active.delete(promise));
+   if(!rows[0])break;pilotClaimed=true;const promise=run(rows[0]).catch(()=>{});active.add(promise);promise.finally(()=>{active.delete(promise);if(localPilot)stopping=true;});
   }
   await sleep(1000);
  }}finally{await Promise.allSettled([...active]);await browser.close();await app.close();}

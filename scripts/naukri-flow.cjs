@@ -1,4 +1,10 @@
 const profileUrl = 'https://www.naukri.com/mnjuser/profile';
+async function openProfile(page) {
+  const response = await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  if (response && response.status() >= 400) {
+    throw Object.assign(Error(`Naukri rejected the background browser (HTTP ${response.status()}). No application was submitted; this is not an OTP/login prompt.`), { portalBlocked: true });
+  }
+}
 function isNaukriJob(value) {
   try { const u = new URL(value); return u.origin === 'https://www.naukri.com' && u.pathname.startsWith('/job-listings-'); }
   catch { return false; }
@@ -58,4 +64,4 @@ async function syncResume(page, resume, { timeout = 20000 } = {}) {
   }
 }
 
-module.exports = { profileUrl, profileState, syncResume, isNaukriJob };
+module.exports = { profileUrl, profileState, syncResume, isNaukriJob, openProfile };

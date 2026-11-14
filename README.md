@@ -96,6 +96,14 @@ Automated tests use synthetic Naukri pages. They do not establish compatibility
 with the current live portal or prove a real employer submission. An always-on
 browser worker and configured verification email sender remain deployment prerequisites.
 
+For an attended PC pilot only, `CLOUD_AGENT_LOCAL_PILOT=true` is accepted with an
+HTTP loopback `CLOUD_AGENT_PUBLIC_ORIGIN`. It permits dashboard-only verification
+without an email sender, disables automatic scheduling, and limits the worker to
+one claimed task before exiting. Production HTTPS origins cannot enable this mode.
+Naukri HTTP errors stop the task with the actual status; a 403 is not presented as
+an OTP request or worked around by the agent. A local-browser login does not change
+access restrictions on the separate worker browser.
+
 ## Deployment on Render
 
 - API: Docker Web Service, repository-root `Dockerfile.agent`.

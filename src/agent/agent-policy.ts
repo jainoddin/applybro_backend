@@ -1,6 +1,10 @@
 import { createCipheriv,createDecipheriv,createHash,randomBytes } from 'crypto';
 import { isIP } from 'net';
 export const terminalStates=new Set(['CONFIRMED','FAILED','CANCELLED','SKIPPED']);
+export function localPilotEnabled(env:Record<string,string|undefined>=process.env){
+ if(env.CLOUD_AGENT_LOCAL_PILOT!=='true')return false;
+ try{const u=new URL(env.CLOUD_AGENT_PUBLIC_ORIGIN||'');return u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname);}catch{return false;}
+}
 export function agentKey(){const raw=process.env.CLOUD_AGENT_ENCRYPTION_KEY||'';if(!/^[a-f0-9]{64}$/i.test(raw))throw Error('Cloud agent encryption key is not configured.');return Buffer.from(raw,'hex');}
 export function seal(value:any){const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',agentKey(),iv);const body=Buffer.concat([cipher.update(JSON.stringify(value),'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),body]).toString('base64');}
 export function unseal(value:string){const all=Buffer.from(value,'base64');const cipher=createDecipheriv('aes-256-gcm',agentKey(),all.subarray(0,12));cipher.setAuthTag(all.subarray(12,28));return JSON.parse(Buffer.concat([cipher.update(all.subarray(28)),cipher.final()]).toString('utf8'));}

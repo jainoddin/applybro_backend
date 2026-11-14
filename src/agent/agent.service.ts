@@ -3,14 +3,15 @@ import { randomBytes,randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { JobsService } from '../jobs/jobs.service';
 import { minimumExperience } from '../jobs/skill-match';
-import { approvedUrl,factsFor,seal,tokenHash,unseal } from './agent-policy';
+import { approvedUrl,factsFor,seal,tokenHash,unseal,localPilotEnabled } from './agent-policy';
 
 @Injectable()
 export class CloudAgentService {
  constructor(private readonly db:PrismaService,private readonly jobs:JobsService){}
  async config(){
   const issues=[];if(process.env.CLOUD_AGENT_ENABLED!=='true')issues.push('Server-side agent is not enabled by the operator.');
-  if(!process.env.RESEND_API_KEY||!process.env.CLOUD_AGENT_EMAIL_FROM)issues.push('Verification email sender is not configured.');
+  const localPilot=localPilotEnabled();
+  if((!process.env.RESEND_API_KEY||!process.env.CLOUD_AGENT_EMAIL_FROM)&&!localPilot)issues.push('Verification email sender is not configured.');
   if(!/^[a-f0-9]{64}$/i.test(process.env.CLOUD_AGENT_ENCRYPTION_KEY||''))issues.push('Private session encryption is not configured.');
   if(!process.env.CLOUD_AGENT_MODEL||!(process.env.CLOUD_AGENT_API_KEY||process.env.GEMINI_API_KEYS))issues.push('Vision model configuration is missing.');
   try{const u=new URL(process.env.CLOUD_AGENT_PUBLIC_ORIGIN||'');if(u.protocol!=='https:'&&!(['localhost','127.0.0.1'].includes(u.hostname)&&u.protocol==='http:'))throw Error();}catch{issues.push('A valid HTTPS website origin is required for action links.');}
@@ -19,7 +20,7 @@ export class CloudAgentService {
   const workerOnline=!!heart[0]&&Date.now()-new Date(heart[0].updatedAt).getTime()<90000;
   if(!workerOnline)issues.push('Hosted browser worker is offline.');
   if(!heart[0]?.modelReady)issues.push('AI model connection has not passed the worker startup check.');
-  return {ready:!issues.length,issues,workerOnline,allowedHosts:hosts,emailConfigured:!!(process.env.RESEND_API_KEY&&process.env.CLOUD_AGENT_EMAIL_FROM),handoffMinutes:5};
+  return {ready:!issues.length,issues,workerOnline,allowedHosts:hosts,emailConfigured:!!(process.env.RESEND_API_KEY&&process.env.CLOUD_AGENT_EMAIL_FROM),handoffMinutes:5,localPilot};
  }
  async owned(userId:string,id:string){const rows:any[]=await this.db.$queryRaw`SELECT * FROM "AgentRun" WHERE "id"=${id} AND "userId"=${userId}`;if(!rows[0])throw new NotFoundException('Agent task not found.');return rows[0];}
  async status(userId:string){
@@ -77,7 +78,7 @@ export class CloudAgentService {
   const today=new Date(new Date(Date.now()+19800000).toISOString().slice(0,10)+'T00:00:00+05:30');
   const sent=await this.db.jobApplication.findMany({where:{userId,status:'APPLIED',appliedAt:{gte:today}}});
   const confirmed=sent.filter(a=>{const m:any=a.matchReasons;return m?.providerReceipt||m?.browserConfirmation||m?.agentConfirmation;}).length;
-  const budget=Math.max(0,user.dailyApplyLimit-pending.length-confirmed);
+  const budget=Math.min(localPilotEnabled()?1:Infinity,Math.max(0,user.dailyApplyLimit-pending.length-confirmed));
   const queued=[],skipped=[];for(const job of data.jobs.filter(x=>x.status!=='APPLIED').slice(0,50)){if(queued.length>=budget)break;try{queued.push(await this.enqueue(userId,job.id));}catch(e){skipped.push({jobId:job.id,reason:e.message});}}
   return {queued,skipped,applied:0};
  }

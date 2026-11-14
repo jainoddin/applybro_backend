@@ -1,5 +1,11 @@
 const {test}=require('node:test');const assert=require('node:assert/strict');
-const {seal,unseal,approvedUrl,publicAddress,factValue,validateAction,tokenHash}=require('../dist/agent/agent-policy');
+const {seal,unseal,approvedUrl,publicAddress,factValue,validateAction,tokenHash,localPilotEnabled}=require('../dist/agent/agent-policy');
+
+test('single-job local pilot cannot disable production email requirements',()=>{
+ assert.equal(localPilotEnabled({CLOUD_AGENT_LOCAL_PILOT:'true',CLOUD_AGENT_PUBLIC_ORIGIN:'http://localhost:3010'}),true);
+ for(const origin of ['https://applybro-frontend.vercel.app','http://localhost.attacker.invalid','http://192.168.1.5'])assert.equal(localPilotEnabled({CLOUD_AGENT_LOCAL_PILOT:'true',CLOUD_AGENT_PUBLIC_ORIGIN:origin}),false);
+ assert.equal(localPilotEnabled({CLOUD_AGENT_PUBLIC_ORIGIN:'http://localhost:3010'}),false);
+});
 test('private sessions encrypt, authenticate and reject tampering',()=>{process.env.CLOUD_AGENT_ENCRYPTION_KEY='ab'.repeat(32);const encrypted=seal({cookie:'fixture-private'});assert(!encrypted.includes('fixture-private'));assert.equal(unseal(encrypted).cookie,'fixture-private');const bytes=Buffer.from(encrypted,'base64');bytes[30]^=1;assert.throws(()=>unseal(bytes.toString('base64')));});
 test('employer navigation is exact-host HTTPS and cannot enable unrestricted LinkedIn automation',()=>{const hosts=['job-boards.greenhouse.io','www.linkedin.com'];assert(approvedUrl('https://job-boards.greenhouse.io/example/jobs/123',hosts));for(const url of ['http://job-boards.greenhouse.io','https://job-boards.greenhouse.io.attacker.test','https://user:pass@job-boards.greenhouse.io','https://www.linkedin.com/jobs/view/123','https://job-boards.greenhouse.io:8443'])assert.equal(approvedUrl(url,hosts),false);});
 test('private and metadata IP addresses never pass the browser network guard',()=>{for(const ip of ['127.0.0.1','10.0.0.1','172.16.0.1','192.168.1.1','169.254.169.254','100.64.0.1','::1','fc00::1','fe80::1','::ffff:127.0.0.1'])assert.equal(publicAddress(ip),false,ip);assert(publicAddress('8.8.8.8'));assert(publicAddress('2606:4700:4700::1111'));});
