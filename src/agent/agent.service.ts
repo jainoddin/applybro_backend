@@ -26,7 +26,11 @@ export class CloudAgentService {
   const runs:any[]=await this.db.$queryRaw`SELECT r."id",r."state",r."reason",r."steps",r."createdAt",r."updatedAt",r."interactiveUntil",r."handoffExpires",r."confirmation",a."jobTitle",a."companyName" FROM "AgentRun" r JOIN "JobApplication" a ON a."id"=r."applicationId" WHERE r."userId"=${userId} ORDER BY r."createdAt" DESC LIMIT 30`;
   const preferences:any[]=await this.db.$queryRaw`SELECT "enabled","consentedAt" FROM "AgentPreference" WHERE "userId"=${userId}`;
   const notices:any[]=await this.db.$queryRaw`SELECT DISTINCT ON (n."runId") n."runId",n."state",n."expiresAt" FROM "AgentNotice" n JOIN "AgentRun" r ON r."id"=n."runId" WHERE r."userId"=${userId} ORDER BY n."runId",n."createdAt" DESC`;
-  return {config:await this.config(),enabled:preferences[0]?.enabled===true,runs,notices};
+  const matches=await this.jobs.getMatchedJobs(userId);
+  const user=await this.db.user.findUnique({where:{id:userId},select:{minMatchScore:true}});
+  const candidateJobs=matches.jobs.filter(job=>job.status!=='APPLIED'&&job.matchAssessed&&job.matchScore>=(user?.minMatchScore??70)&&approvedUrl(job.applicationUrl)).slice(0,50).map(job=>({id:job.id,title:job.title,company:job.company,score:job.matchScore}));
+  const events:any[]=await this.db.$queryRaw`SELECT e."runId",e."kind",e."message",e."createdAt" FROM "AgentEvent" e JOIN "AgentRun" r ON r."id"=e."runId" WHERE r."userId"=${userId} ORDER BY e."createdAt" DESC LIMIT 100`;
+  return {config:await this.config(),enabled:preferences[0]?.enabled===true,runs,notices,candidateJobs,events};
  }
  async settings(userId:string,body:any){
   if(typeof body?.enabled!=='boolean')throw new BadRequestException('Choose whether hosted automation is enabled.');
@@ -76,6 +80,11 @@ export class CloudAgentService {
   const budget=Math.max(0,user.dailyApplyLimit-pending.length-confirmed);
   const queued=[],skipped=[];for(const job of data.jobs.filter(x=>x.status!=='APPLIED').slice(0,50)){if(queued.length>=budget)break;try{queued.push(await this.enqueue(userId,job.id));}catch(e){skipped.push({jobId:job.id,reason:e.message});}}
   return {queued,skipped,applied:0};
+ }
+ async queueOne(userId:string,applicationId:unknown){
+  if(typeof applicationId!=='string'||!applicationId||applicationId.length>128)throw new BadRequestException('Choose a valid saved job.');
+  const config=await this.config();if(!config.ready)throw new ServiceUnavailableException(config.issues.join(' '));
+  return {queued:[await this.enqueue(userId,applicationId)],skipped:[],applied:0};
  }
  async pause(run:any,reason:string){
   const token=randomBytes(32).toString('base64url'),hash=tokenHash(token),expires=new Date(Date.now()+300000),noticeId=randomUUID();

@@ -7,6 +7,7 @@ const {approvedUrl,agentKey,seal,unseal,factsFor,terminalStates}=require('../dis
 const {observe,execute,plan,allowNetwork,submitLike,element,targetAt}=require('./cloud-browser.cjs');
 const {claim,heartbeat,recover}=require('./cloud-queue.cjs');
 const {reviewWindow,waitForReview}=require('./agent-pacing.cjs');
+const {profileUrl,profileState,syncResume,isNaukriJob}=require('./naukri-flow.cjs');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const owner=randomUUID();let stopping=false;
 process.on('SIGTERM',()=>{stopping=true;});process.on('SIGINT',()=>{stopping=true;});
@@ -20,7 +21,7 @@ async function main(){
  const update=async(id,state,reason)=>{await db.$executeRaw`UPDATE "AgentRun" SET "state"=${state},"reason"=${String(reason).slice(0,600)},"updatedAt"=NOW() WHERE "id"=${id} AND "leaseOwner"=${owner} AND "state" NOT IN ('CANCELLED','CONFIRMED')`;};
  async function run(initial){
   let context,page,observation,history=[],blocked='',lastShot=0;const privateFields=[];
-  const reviewUntil=Date.now()+reviewWindow();
+  const reviewDuration=reviewWindow();let reviewUntil=0;
   const privateImage=()=>page.screenshot({type:'png',mask:[...page.frames().map(frame=>frame.locator('input[type="password"],input[autocomplete="one-time-code"],input[name*="otp" i]')),...privateFields.filter(f=>page.frames()[f.frame]).map(f=>element(page,f.id,f.frame))]});
   const user=await db.user.findUnique({where:{id:initial.userId}}),facts=factsFor(user);
   const expectedJob=await db.jobApplication.findFirst({where:{id:initial.applicationId,userId:initial.userId}});
@@ -73,8 +74,25 @@ async function main(){
     return route.continue();
    });
    if(context.routeWebSocket)await context.routeWebSocket('**/*',socket=>socket.close());
-   await page.goto(initial.url,{waitUntil:'domcontentloaded',timeout:30000});
-   await event(initial.id,'REVIEW','Review window selected: '+Math.ceil((reviewUntil-Date.now())/1000)+' seconds. Form completion and verification may take longer.');
+   const jobUrl=expectedJob.matchReasons?.url||initial.url;
+   if(isNaukriJob(jobUrl)){
+    await page.goto(profileUrl,{waitUntil:'domcontentloaded',timeout:30000});
+    while(!(await profileState(page)).signedIn){
+     if(!await waitForUser('Sign in to Naukri in this private cloud browser, complete OTP/CAPTCHA, then Continue. Your local Naukri login is separate.'))return;
+     await page.goto(profileUrl,{waitUntil:'domcontentloaded',timeout:30000});
+    }
+    // Native Apply uses Naukri's portal resume. Upload our actual stored file
+    // first, and require a new success receipt before allowing any submission.
+    let synced=false;
+    for(let attempt=0;attempt<2&&!synced;attempt++){
+     try{await syncResume(page,resume);await uploadSaved();await saveSession();await event(initial.id,'RESUME','Stored ApplyBro resume uploaded to the private Naukri profile; fresh portal upload receipt observed.');synced=true;}
+     catch(e){if(!await waitForUser(e.message))return;await page.goto(profileUrl,{waitUntil:'domcontentloaded',timeout:30000});}
+    }
+    if(!synced){await update(initial.id,'FAILED','Naukri resume synchronization was not confirmed. No submission attempted.');return;}
+   }
+   await page.goto(jobUrl,{waitUntil:'domcontentloaded',timeout:30000});
+   reviewUntil=Date.now()+reviewDuration;
+   await event(initial.id,'REVIEW','Review window selected: '+reviewDuration/1000+' seconds. Form completion and verification may take longer.');
    if(initial.reason==='Restore private browser for user action.'){
     if(!await waitForUser('Browser restored. Verify the portal session and complete the pending question.',true))return;
    }

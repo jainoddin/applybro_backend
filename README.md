@@ -77,6 +77,25 @@ Scrolling is incremental and actions have a short settling delay. These settings
 provide readable, conservative pacing; they do not simulate a human identity or
 guarantee portal access. Configure the review range in `cloud-agent.env.example`.
 
+### Naukri pilot flow
+
+Explicitly enable `www.naukri.com` in the API and worker's allowed-host settings.
+Use the hosted-agent screen to choose one assessed job for the first pilot run.
+The worker opens an isolated Naukri profile in its server browser. The user signs
+in through the private screenshot controls when prompted; local companion login
+is never treated as a cloud login. The worker uploads the saved private resume and
+requires a fresh visible upload-success message plus the expected filename before
+native Apply can submit that portal profile. Unsupported layouts pause for review.
+
+For "Apply on company site", navigation does not consume a submission reservation
+or count as sent. Only explicitly allowed destination hosts may load; other company
+sites pause for operator configuration. A fresh employer application confirmation
+is still required after Submit. Task activity is owner-scoped in the hosted UI.
+
+Automated tests use synthetic Naukri pages. They do not establish compatibility
+with the current live portal or prove a real employer submission. An always-on
+browser worker and configured verification email sender remain deployment prerequisites.
+
 ## Deployment on Render
 
 - API: Docker Web Service, repository-root `Dockerfile.agent`.

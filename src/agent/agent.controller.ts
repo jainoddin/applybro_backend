@@ -6,7 +6,7 @@ export class CloudAgentController {
  constructor(private readonly agent:CloudAgentService){}
  @Get('status') status(@Req()req:any){return this.agent.status(req.authUser.id);}
  @Post('settings') settings(@Req()req:any,@Body()body:any){return this.agent.settings(req.authUser.id,body);}
- @Post('queue') queue(@Req()req:any){return this.agent.queueMatches(req.authUser.id);}
+ @Post('queue') queue(@Req()req:any,@Body()body:any){return body?.applicationId!==undefined?this.agent.queueOne(req.authUser.id,body.applicationId):this.agent.queueMatches(req.authUser.id);}
  @Get('runs/:id/screen') screen(@Req()req:any,@Param('id')id:string){return this.agent.screen(req.authUser.id,id);}
  @Post('runs/:id/unlock') unlock(@Req()req:any,@Param('id')id:string){return this.agent.unlock(req.authUser.id,id);}
  @Post('runs/:id/redeem') redeem(@Req()req:any,@Param('id')id:string,@Body()body:any){return this.agent.redeem(req.authUser.id,id,body?.token);}
