@@ -6,7 +6,7 @@ On an existing Linux host with Docker:
 
 ```sh
 docker build -f Dockerfile.browser-test -t applybro-browser-test .
-docker run --rm --init --ipc=host applybro-browser-test
+docker run --rm --init --ipc=host -p 127.0.0.1:10000:10000 applybro-browser-test
 ```
 
 Output meanings:
@@ -15,10 +15,20 @@ Output meanings:
 - `BLOCKED`: stop. The portal rejected server access; no login/submission is claimed.
 - `NOT_VERIFIED`: expected login form was not observed; inspect through an attended server session.
 
-Exit codes: 0 = login form loaded, 2 = access not verified/blocked, 1 = runtime failure.
+The container starts the health/result host first and runs one bounded browser child. `/health` checks only the host process. `/result` reports the cached browser result. It exposes no browser-control endpoint.
 
-Do not deploy this as a restarting production worker: it exits after one probe. A real always-on worker needs suitable hosting, separate per-user server sessions, authentication/OTP handling and verified application outcomes. Existing local Chrome profiles in `secrets/` must never be pushed or baked into an image. No hosting resources are created by this package.
+A real always-on worker needs suitable hosting, separate per-user server sessions, authentication/OTP handling and verified application outcomes. Existing local Chrome profiles in `secrets/` must never be pushed or baked into an image.
 
-For a temporary free Render Web Service, override the Docker command with `xvfb-run -a node scripts/server-browser-probe.cjs --serve`. This runs exactly one access probe at startup, closes the browser, and serves a sanitized cached result at `/result`; `/health` is a process health check only. It has no browser-control, credentials, screenshots, or application endpoints. It sleeps according to the free hosting policy and is not an always-on worker. No application environment secrets are needed.
+For a temporary free Render Web Service, select `Dockerfile.browser-test` and leave the Docker command empty. The default is `node scripts/server-browser-host.cjs`. It runs exactly one headed access probe through Xvfb at startup, closes the browser, and serves the sanitized result. It has no browser-control, credentials, screenshots, or application endpoints. It sleeps according to the free hosting policy and is not an always-on worker. No application environment secrets are needed.
+
+Verified on Render Linux, 2026-11-14 at 13:07:52 UTC:
+
+```json
+{"browserMode":"headed","displayAvailable":true,"status":"LOGIN_FORM_AVAILABLE","httpStatus":200,"loginAttempted":false,"applicationsSubmitted":0}
+```
+
+Service: https://applybro-browser-access-test.onrender.com/result
+
+This proves only that the login form loaded on that server at that time. It does not verify an account, persist a session, submit a job, or establish continuous offline processing. The earlier `applybro-browser-probe` free service failed port readiness with its custom startup command; it is not the working test endpoint. Both temporary services have auto-deploy disabled.
 
 Official headed Linux setup: https://playwright.dev/docs/ci#running-headed
