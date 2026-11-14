@@ -9,6 +9,7 @@ import { Module } from "@nestjs/common";
 import { OffersModule } from "./offers/offers.module";
 import { CloudAgentModule } from './agent/agent.module';
 import { HealthController } from './health.controller';
+import { NaukriTestModule } from './naukri-test/naukri-test.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { HealthController } from './health.controller';
     ProfileModule,
     JobsModule,
     CloudAgentModule,
+    NaukriTestModule,
   ],
   controllers: [HealthController],
   providers: [],
