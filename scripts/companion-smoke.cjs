@@ -1,0 +1,37 @@
+require('dotenv').config();
+const {PrismaClient}=require('@prisma/client');
+const assert=require('node:assert/strict');
+const {CompanionService}=require('../dist/jobs/companion.service');
+const db=new PrismaClient();
+(async()=>{let uid;
+ try{
+  const user=await db.user.create({data:{email:`companion-test-${Date.now()}@example.invalid`,name:'Companion validation',subscription:{create:{active:true,trialEnds:new Date(Date.now()+86400000)}}}});uid=user.id;
+  const service=new CompanionService(db);const pair=await service.pair(uid);const device=await service.device('Bearer '+pair.token);
+  assert.equal(device.userId,uid);await assert.rejects(()=>service.device('Bearer invalid'));
+  const verify=await service.create(uid,{kind:'VERIFY',portal:'Naukri.com'});
+  await assert.rejects(()=>service.report(device,verify.id,{stage:'VERIFIED',url:verify.url,evidence:{type:'SIGNED_IN_MARKER'}}));
+  await service.report(device,verify.id,{stage:'OPENED',url:verify.url});
+  await service.report(device,verify.id,{stage:'VERIFIED',url:verify.url,evidence:{type:'SIGNED_IN_MARKER'}});
+  await service.disconnectPortal(uid,'Naukri.com');assert.equal((await service.status(uid)).runs.find(r=>r.id===verify.id).stage,'DISCONNECTED');await assert.rejects(()=>service.report(device,verify.id,{stage:'VERIFIED',url:verify.url,evidence:{type:'SIGNED_IN_MARKER'}}));
+  const stale=await service.create(uid,{kind:'VERIFY',portal:'LinkedIn'});
+  await service.report(device,stale.id,{stage:'OPENED',url:stale.url});
+  await service.report(device,stale.id,{stage:'LOGIN_REQUIRED',url:stale.url});
+  await db.$executeRaw`UPDATE "BrowserRun" SET "createdAt"=NOW()-INTERVAL '4 minutes' WHERE "id"=${stale.id}`;
+  assert.equal((await service.status(uid)).runs.find(r=>r.id===stale.id).stage,'TIMED_OUT');
+  await assert.rejects(()=>service.task(device,stale.id));
+  const job=await db.jobApplication.create({data:{userId:uid,jobTitle:'Test fixture only',companyName:'Test fixture',portal:'ATS_DIRECT',matchScore:100,applyMode:'ASSISTED_APPLY',matchReasons:{version:'official-feed-v1',source:'greenhouse',url:'https://job-boards.greenhouse.io/test/jobs/123'}}});
+  const attempts=await Promise.allSettled([service.create(uid,{kind:'APPLY',applicationId:job.id}),service.create(uid,{kind:'APPLY',applicationId:job.id})]);assert.equal(attempts.filter(r=>r.status==='fulfilled').length,1);const run=attempts.find(r=>r.status==='fulfilled').value;
+  await assert.rejects(()=>service.create(uid,{kind:'APPLY',applicationId:job.id}));
+  await service.report(device,run.id,{stage:'OPENED',url:run.url});
+  await service.report(device,run.id,{stage:'REVIEW_REQUIRED',url:run.url});
+  const resumed=await service.create(uid,{kind:'APPLY',applicationId:job.id,resumeExisting:true});assert.equal(resumed.id,run.id);
+  await assert.rejects(()=>service.report(device,run.id,{stage:'BROWSER_CONFIRMED',url:run.url,evidence:{type:'SUBMISSION_MESSAGE',text:'Application submitted'}}));
+  await service.report(device,run.id,{stage:'SUBMITTING',url:run.url});
+  await assert.rejects(()=>service.report(device,run.id,{stage:'BROWSER_CONFIRMED',url:'https://job-boards.greenhouse.io/test/jobs/999',evidence:{type:'SUBMISSION_MESSAGE',text:'Application submitted'}}));
+  await assert.rejects(()=>service.report(device,run.id,{stage:'BROWSER_CONFIRMED',url:run.url,evidence:{type:'SUBMISSION_MESSAGE',text:'Apply now'}}));
+  await service.report(device,run.id,{stage:'BROWSER_CONFIRMED',url:run.url,evidence:{type:'SUBMISSION_MESSAGE',text:'Your application has been submitted'}});
+  assert.equal((await db.jobApplication.findUnique({where:{id:job.id}})).status,'APPLIED');
+  await service.revoke(uid);await assert.rejects(()=>service.device('Bearer '+pair.token));
+  console.log('PASS: pairing, revocation, run transitions, duplicate guard, job URL binding, explicit submission state and browser-confirmation persistence. Fixture only: no employer request was made.');
+ }finally{if(uid)await db.user.delete({where:{id:uid}});await db.$disconnect();}
+})().catch(error=>{console.error(error.message);process.exitCode=1;});

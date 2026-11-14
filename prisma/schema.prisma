@@ -1,0 +1,342 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum ApplyMode {
+  AUTO_APPLY
+  APPROVE_FIRST
+  ASSISTED_APPLY
+}
+
+enum ApplicationStatus {
+  WAITING_FOR_APPROVAL
+  APPROVED
+  APPLYING
+  APPLIED
+  FAILED
+  NEEDS_MANUAL_ACTION
+  WITHDRAWN
+}
+
+enum PortalType {
+  LINKEDIN
+  NAUKRI
+  INDEED
+  ATS_DIRECT
+}
+
+model User {
+  firebaseUid       String?            @unique
+  authProvider      String?
+  photoUrl          String?
+  lastLoginAt       DateTime?
+  id                String             @id @default(uuid())
+  email             String             @unique
+  phone             String?
+  name              String
+  currentTitle      String?
+  linkedIn          String?
+  portfolio         String?
+  experience        String?
+  currentCtc        String?
+  expectedCtc       String?
+  noticePeriod      String?
+  skills            String?
+  workAuthorization String?
+  relocation        String?
+  primaryPortal     String?
+  selectedPortals   Json?
+  resumeName        String?
+  resumeSize        Int?
+  setupSteps        Boolean[]          @default([false, false, false, false])
+  setupCompleted    Boolean            @default(false)
+  passwordHash      String?
+  emailVerified     Boolean            @default(false)
+  phoneVerified     Boolean            @default(false)
+  activeMode        ApplyMode          @default(APPROVE_FIRST)
+  dailyApplyLimit   Int                @default(5)
+  minMatchScore     Int                @default(70)
+  autoApplyConsent  Boolean            @default(false)
+  consentTimestamp  DateTime?
+  resumes           Resume[]
+  preferences       JobPreference?
+  portalConnections PortalConnection[]
+  applications      JobApplication[]
+  subscription      Subscription?
+  browserDevices    BrowserDevice[]
+  browserRuns       BrowserRun[]
+  agentPreference   AgentPreference?
+  agentSession      AgentSession?
+  agentLease        AgentUserLease?
+  agentRuns         AgentRun[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+}
+
+// Applied with prisma/companion.sql; raw SQL is used so a running Windows
+// Prisma client does not need to be replaced while installing the companion.
+model BrowserDevice {
+  id String @id
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String @unique
+  expiresAt DateTime @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
+  runs BrowserRun[]
+  @@index([userId])
+}
+
+model BrowserRun {
+  id String @id
+  userId String
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceId String
+  device BrowserDevice @relation(fields: [deviceId], references: [id], onDelete: Restrict)
+  applicationId String?
+  kind String
+  portal String
+  url String
+  stage String @default("CREATED")
+  details Json @default("{}")
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @db.Timestamptz(6)
+  @@index([userId])
+}
+
+model Resume {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fileName    String
+  fileUrl     String
+  fileBytes   Bytes?
+  mimeType    String?
+  parsedData  Json?
+  isDefault   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+model JobPreference {
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  titles         String[]
+  locations      String[]
+  workModes      String[]
+  minSalary      Float?
+  maxSalary      Float?
+  includeKeywords String[]
+  excludeKeywords String[]
+  avoidCompanies String[]
+}
+
+model PortalConnection {
+  id          String     @id @default(uuid())
+  userId      String
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  portal      PortalType
+  status      String     @default("CONNECTED")
+  token       String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model JobApplication {
+  id          String            @id @default(uuid())
+  userId      String
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobTitle    String
+  companyName String
+  portal      PortalType
+  matchScore  Int
+  matchReasons Json?
+  agentRuns    AgentRun[]
+  applyMode   ApplyMode
+  status      ApplicationStatus @default(WAITING_FOR_APPROVAL)
+  appliedAt   DateTime?
+  retryCount  Int               @default(0)
+  failedReason String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+}
+
+model AgentPreference {
+ userId String @id
+ user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+ enabled Boolean @default(false)
+ consentedAt DateTime? @db.Timestamptz(6)
+ nextRunAt DateTime @default(now()) @db.Timestamptz(6)
+ updatedAt DateTime @default(now()) @db.Timestamptz(6)
+}
+model AgentRun {
+ id String @id
+ userId String
+ user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+ applicationId String
+ application JobApplication @relation(fields:[applicationId],references:[id],onDelete:Cascade)
+ resumeId String
+ url String
+ state String @default("QUEUED")
+ reason String @default("")
+ steps Int @default(0)
+ resumeUploaded Boolean @default(false)
+ retryCount Int @default(0)
+ nextAttemptAt DateTime @default(now()) @db.Timestamptz(6)
+ leaseOwner String?
+ leaseUntil DateTime? @db.Timestamptz(6)
+ submitReservedAt DateTime? @db.Timestamptz(6)
+ confirmation Json?
+ screen String?
+ screenVersion Int @default(0)
+ fields Json @default("[]")
+ interactiveUntil DateTime? @db.Timestamptz(6)
+ handoffHash String?
+ handoffExpires DateTime? @db.Timestamptz(6)
+ handoffUsedAt DateTime? @db.Timestamptz(6)
+ createdAt DateTime @default(now()) @db.Timestamptz(6)
+ updatedAt DateTime @default(now()) @db.Timestamptz(6)
+ commands AgentCommand[]
+ notices AgentNotice[]
+ events AgentEvent[]
+ @@index([state,createdAt],map:"AgentRun_queue")
+}
+model AgentSession {
+ userId String @id
+ user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+ encrypted String
+ updatedAt DateTime @default(now()) @db.Timestamptz(6)
+}
+model AgentCommand {
+ id String @id
+ runId String
+ run AgentRun @relation(fields:[runId],references:[id],onDelete:Cascade)
+ encrypted String
+ screenVersion Int
+ expiresAt DateTime @db.Timestamptz(6)
+ createdAt DateTime @default(now()) @db.Timestamptz(6)
+}
+model AgentNotice {
+ id String @id
+ runId String
+ run AgentRun @relation(fields:[runId],references:[id],onDelete:Cascade)
+ encrypted String
+ state String @default("PENDING")
+ attempts Int @default(0)
+ expiresAt DateTime @db.Timestamptz(6)
+ createdAt DateTime @default(now()) @db.Timestamptz(6)
+ sentAt DateTime? @db.Timestamptz(6)
+}
+model AgentEvent {
+ id String @id
+ runId String
+ run AgentRun @relation(fields:[runId],references:[id],onDelete:Cascade)
+ kind String
+ message String
+ createdAt DateTime @default(now()) @db.Timestamptz(6)
+}
+model AgentHeartbeat {
+ id String @id
+ modelReady Boolean @default(false)
+ updatedAt DateTime @default(now()) @db.Timestamptz(6)
+}
+model AgentUserLease {
+ userId String @id
+ user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+ runId String
+ owner String
+ expiresAt DateTime @db.Timestamptz(6)
+}
+
+model PricingPlan {
+  discountPercent Int @default(0)
+  gstIncluded Boolean @default(true)
+  requiresStudentVerification Boolean @default(false)
+  id           String   @id @default(uuid())
+  name         String
+  description  String
+  monthlyPrice Float
+  yearlyPrice  Float
+  currency     String   @default("INR")
+  trialDays    Int      @default(0)
+  features     String[]
+  ctaText      String   @default("Get Started")
+  popular      Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  order        Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model StudentVerification {
+  userId String?
+  id String @id @default(uuid())
+  tokenHash String
+  fullName String
+  nameOnId String
+  email String
+  institution String
+  studentId String
+  imageBytes Bytes
+  imageMime String
+  status String @default("PENDING")
+  reviewReason String @default("")
+  reviewedAt DateTime?
+  claimId String? @unique
+  claimedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Subscription {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planName  String   @default("FREE_TRIAL")
+  active    Boolean  @default(true)
+  trialEnds DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Admin-managed Promotional Offer Banners (Stored in PostgreSQL + Cloudflare R2 images)
+model OfferBanner {
+  id          String   @id @default(uuid())
+  title       String
+  subtitle    String
+  imageUrl    String
+  badgeText   String?
+  badgeType   String?  @default("ribbon") // ribbon, pill
+  ctaText     String   @default("Try Now →")
+  ctaLink     String   @default("/pricing")
+  isActive    Boolean  @default(true)
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Daily Deals with countdown timers
+model DailyDeal {
+  popupOnOpen     Boolean  @default(false)
+  id              String   @id @default(uuid())
+  tag             String   // e.g. "🔥 Flash", "Weekly Offer"
+  tagColor        String   @default("pink") // pink, amber, purple, indigo
+  timer           String   // e.g. "12h : 34m"
+  iconType        String   @default("rocket") // rocket, crown, diya, document, custom
+  iconUrl         String?  // Optional Cloudflare R2 uploaded icon/image URL
+  discountText    String   // e.g. "30% OFF"
+  originalPrice   String   // e.g. "₹799"
+  discountedPrice String   // e.g. "₹559"
+  planName        String   // e.g. "AI Premium Plan"
+  ctaText         String   @default("Claim Offer →")
+  ctaLink         String   @default("/pricing")
+  isActive        Boolean  @default(true)
+  order           Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}

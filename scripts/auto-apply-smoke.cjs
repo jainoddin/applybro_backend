@@ -1,0 +1,37 @@
+process.env.COMPANION_AUTO_APPLY_ENABLED='true'; // isolated legacy fixture, not deployment configuration
+require('dotenv').config();const assert=require('node:assert/strict');const {PrismaClient}=require('@prisma/client');
+const {CompanionService}=require('../dist/jobs/companion.service');const {JobsService}=require('../dist/jobs/jobs.service');const {ProfileService}=require('../dist/profile/profile.service');const {savePrivateResume}=require('../dist/profile/private-resume');const {skillMatch}=require('../dist/jobs/skill-match');
+const db=new PrismaClient();
+(async()=>{let id;try{
+ const u=await db.user.create({data:{email:`auto-test-${Date.now()}@example.invalid`,name:'Auto fixture',skills:'React.js, Node.js, TypeScript',dailyApplyLimit:1,subscription:{create:{active:true,trialEnds:new Date(Date.now()+86400000)}}}});id=u.id;
+ const companion=new CompanionService(db),profile=new ProfileService(db,{});const pairing=await companion.pair(id),device=await companion.device('Bearer '+pairing.token);
+ let p=await profile.getProfile(id);
+ await assert.rejects(()=>profile.saveSetup(id,{...p,mode:'AUTO_APPLY',autoApplyConsent:true}));
+ await savePrivateResume(db,id,{bytes:Buffer.from('%PDF-1.4 fixture only'),fileName:'fixture.pdf',mimeType:'application/pdf'});
+ p=await profile.getProfile(id);assert.equal(p.resumeStored,true);
+ await assert.rejects(()=>profile.saveSetup(id,{...p,mode:'AUTO_APPLY',autoApplyConsent:false}));
+ await profile.saveSetup(id,{...p,mode:'AUTO_APPLY',autoApplyConsent:true});
+ await db.jobApplication.create({data:{userId:id,jobTitle:'Legacy sample',companyName:'Legacy fixture',portal:'ATS_DIRECT',status:'APPLIED',appliedAt:new Date(),matchScore:99,applyMode:'AUTO_APPLY',matchReasons:[]}});
+ await db.jobApplication.create({data:{userId:id,jobTitle:'Fixture only',companyName:'Fixture',portal:'ATS_DIRECT',matchScore:80,applyMode:'ASSISTED_APPLY',matchReasons:{version:'official-feed-v1',matchAssessed:true,source:'greenhouse',url:'https://job-boards.greenhouse.io/fixture/jobs/123'}}});
+ const jobs=new JobsService(db,{discover:async()=>({jobs:[],warnings:[]})},companion);const batch=await jobs.runAutoApplyBatch(id);assert.equal(batch.runs.length,1);assert.equal(batch.appliedCount,0);
+ const task=await companion.task(device,batch.runs[0].id);assert.equal(task.autoSubmit,true);assert.equal(task.resume.fileName,'fixture.pdf');assert.equal((await jobs.getMatchedJobs(id)).stats.inProgress,1);assert.equal((await companion.status(id)).activeAutoRuns.length,1);
+ await companion.report(device,task.id,{stage:'OPENED',url:task.url});await companion.report(device,task.id,{stage:'REVIEW_REQUIRED',url:task.url});
+ const paused=await jobs.getMatchedJobs(id);assert.equal(paused.stats.inProgress,0);assert.equal(paused.stats.needsReview,1);assert.equal(paused.stats.applied,0);
+ const blockedBatch=await jobs.runAutoApplyBatch(id);assert.equal(blockedBatch.runs.length,0);assert.match(blockedBatch.message,/No additional search tabs/);
+ await profile.saveSetup(id,{...p,mode:'APPROVE_FIRST',autoApplyConsent:false});assert.equal((await companion.task(device,task.id)).autoSubmit,false);assert.equal((await jobs.getMatchedJobs(id)).stats.applied,0);assert.equal((await companion.status(id)).activeAutoRuns.length,0);
+ assert.equal(skillMatch('React.js,Node.js,TypeScript','React, TypeScript and NodeJS required').score,100);assert.equal(skillMatch('','React').score,0);
+ await profile.saveSetup(id,{...p,mode:'AUTO_APPLY',autoApplyConsent:true});
+ const description='Python Java and Rust systems programming experience. '.repeat(5);
+ const low=await companion.observeJob(device,{url:'https://job-boards.greenhouse.io/fixture/jobs/456',title:'Frontend Engineer',description});
+ assert.equal(low.prepared,true);const prepared=await companion.task(device,low.nextRun.id);assert.equal(prepared.autoPrepare,true);assert.equal(prepared.autoSubmit,false);assert.ok(prepared.resume.base64);
+ const search=await companion.create(id,{kind:'DISCOVER',portal:'Naukri.com',autoDiscover:true});
+ await companion.report(device,search.id,{stage:'OPENED',url:search.url});await companion.report(device,search.id,{stage:'REVIEW_REQUIRED',url:search.url});
+ const imported=await companion.importJobs(device,search.id,{jobs:[{url:'https://www.naukri.com/job-listings-fixture-789',title:'Frontend Engineer',company:'Fixture'}]});assert.equal(imported.inspectRuns.length,1);
+ const inspect=imported.inspectRuns[0];const inspection=await companion.task(device,inspect.id);assert.equal(inspection.resume,null);assert.equal(inspection.profile,null);
+ const matched=await companion.observeJob(device,{url:inspect.url,title:'Frontend Engineer',description:'React TypeScript and NodeJS role. '.repeat(8)},inspect.id);assert.equal(matched.prepared,true);assert.equal((await companion.task(device,matched.nextRun.id)).autoSubmit,true);
+ await assert.rejects(()=>companion.observeJob(device,{url:'https://www.naukri.com/job-listings-other-999',title:'Frontend Engineer',description},inspect.id));
+ await db.jobApplication.updateMany({where:{userId:id,status:{not:'APPLIED'}},data:{matchScore:0}});
+ await profile.saveSetup(id,{...await profile.getProfile(id),mode:'AUTO_APPLY',autoApplyConsent:true,portals:['Naukri.com']});
+ const fallback=await jobs.runAutoApplyBatch(id);assert.equal(fallback.runs.length,1);assert.equal(fallback.runs[0].kind,'DISCOVER');assert.equal((await companion.task(device,fallback.runs[0].id)).autoDiscover,true);
+ console.log('PASS: private resume requirement, explicit consent, browser batch creation, pending counts, resume transfer, mode-off cancellation, skill aliases. No employer request or application sent.');
+}finally{if(id)await db.user.delete({where:{id}});await db.$disconnect();}})().catch(e=>{console.error(e.message);process.exitCode=1;});
