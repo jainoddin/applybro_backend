@@ -35,7 +35,7 @@ class LoginRelay {
   }
   async close(owner) {
     const s = this.sessions.get(owner); if (!s) return { closed: true };
-    this.sessions.delete(owner); clearTimeout(s.timer); await s.browser.close().catch(() => {}); return { closed: true };
+    s.closing = true; s.pendingAuth?.clear(); this.sessions.delete(owner); clearTimeout(s.timer); await s.browser.close().catch(() => {}); return { closed: true };
   }
   current(owner) {
     const s = this.sessions.get(owner);
@@ -73,17 +73,22 @@ class LoginRelay {
       const sections = ['resume', 'key skills', 'employment', 'education', 'profile summary'].filter(x => headings.includes(x)).length;
       const privatePage = /^\/mnjuser\/(homepage|profile)\/?$/.test(location.pathname);
       const profileLink = [...document.querySelectorAll('a,button')].some(el => visible(el) && /^(view|edit) profile$/i.test(el.textContent.trim()));
-      const signedIn = privatePage && !fields.some(f => f.type === 'password') && (sections >= 2 || profileLink && /profile performance/i.test(document.body.innerText));
+      const visiblePassword = [...document.querySelectorAll('input[type=password]')].some(visible);
+      const signedIn = privatePage && !visiblePassword && (sections >= 2 || profileLink && /profile performance/i.test(document.body.innerText));
+      const loading = !signedIn && [...document.querySelectorAll('[role=progressbar],[aria-busy=true],.loader,.loading,[class*=spinner i]')].some(visible);
       const name = signedIn ? [...document.querySelectorAll('[data-field=name],.user-name,.userName,.name,h1')].find(visible)?.textContent?.trim().slice(0, 120) || null : null;
       const challenge = [...document.querySelectorAll('iframe[src*=captcha],[id*=captcha i]')].some(visible);
       const messages = [...document.querySelectorAll('[role=alert],[class*=error i],.err,.err-msg,.errMsg,.formTextErr')].filter(visible).filter(el => el.innerText && el.innerText.length < 400).map(el => el.innerText.trim()).filter(Boolean).filter((x,i,all) => all.indexOf(x) === i).join(' ').slice(0, 400);
-      return { fields, buttons, signedIn, name, challenge, message: signedIn ? 'Signed-in Naukri profile observed.' : messages || 'Enter the fields requested by Naukri, then choose its login or verification button.' };
+      return { fields, buttons, signedIn, name, challenge, loading, message: signedIn ? 'Signed-in Naukri profile observed.' : messages || 'Enter the fields requested by Naukri, then choose its login or verification button.' };
     });
     s.version++; s.fields = view.fields; s.buttons = view.buttons;
-    if (!view.signedIn && s.lastAction && !view.challenge && !/error|invalid|incorrect|wrong|unable/i.test(view.message)) view.message = 'Sign-in is not confirmed. Naukri still shows this form after ' + s.lastAction + '. Check the portal preview and response below.';
+    const processing = !view.signedIn && !!s.lastAction && (!!s.pendingAuth?.size || view.loading);
+    const timedOut = processing && Date.now() - s.loginStartedAt > 20000;
+    if (processing) view.message = timedOut ? 'Naukri has not finished its login request within 20 seconds. Sign-in is unconfirmed. Do not resend your password repeatedly; you can close this session.' : 'Naukri is processing your login. Waiting for its response; no additional input is requested yet.';
+    else if (!view.signedIn && s.lastAction && !view.challenge && !/error|invalid|incorrect|wrong|unable/i.test(view.message)) view.message = view.fields.length ? 'Sign-in is not confirmed. Naukri still shows its login form. Check the portal preview and response below.' : 'The page has not provided a verifiable signed-in profile or an editable question. Check the portal preview; no sign-in is claimed.';
     if (!view.signedIn && s.network?.outcome === 'REQUEST_FAILED') view.message = `The Naukri login request failed (${s.network.errorCode || 'network error'}). ${s.network.guardReason ? 'ApplyBro network guard: ' + s.network.guardReason + '. ' : ''}No sign-in was confirmed. ` + view.message;
     const preview = await s.page.screenshot({ type: 'jpeg', quality: 65, mask: [s.page.locator('input,textarea,select')], timeout: 5000 }).then(b => b.toString('base64')).catch(() => null);
-    return { ...view, status: view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : 'INPUT_REQUIRED', version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: false, preview, network: s.network || null, lastAction: s.lastAction || null, transport: s.transport };
+    return { ...view, ...(processing ? { fields: [], buttons: [] } : {}), status: view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : timedOut ? 'LOGIN_TIMEOUT' : processing ? 'LOGIN_PROCESSING' : view.fields.length ? 'INPUT_REQUIRED' : 'PAGE_UNVERIFIED', version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: false, preview, network: s.network || null, lastAction: s.lastAction || null, transport: s.transport };
   }
   async start(owner) {
     return this.locked(owner, async () => {
@@ -110,14 +115,18 @@ class LoginRelay {
         const response = await page.goto(LOGIN, { waitUntil: 'domcontentloaded', timeout: 20000 });
         if (response?.status() >= 400) { await browser.close(); return { status: 'BLOCKED', httpStatus: response.status(), message: 'Naukri denied this browser. No account was connected.', fields: [], buttons: [] }; }
         await page.waitForTimeout(1500);
-        s = { browser, page, version: 0, fields: [], buttons: [], transport: http1Only ? 'HTTP1_COMPATIBILITY' : 'BROWSER_DEFAULT', expiresAt: Date.now() + 300000 };
+        s = { browser, page, version: 0, fields: [], buttons: [], pendingAuth: new Map(), transport: http1Only ? 'HTTP1_COMPATIBILITY' : 'BROWSER_DEFAULT', expiresAt: Date.now() + 300000 };
+        page.on('request', request => { if (authRequest(request)) s.pendingAuth.set(request, Date.now()); });
+        page.on('requestfinished', request => { s.pendingAuth.delete(request); });
         page.on('response', response => { if (authRequest(response.request())) s.network = { outcome: 'RESPONSE', httpStatus: response.status() }; });
         page.on('requestfailed', request => {
           if (!authRequest(request)) return;
+          const startedAt = s.pendingAuth.get(request); s.pendingAuth.delete(request);
+          if (s.closing) return;
           const code = request.failure()?.errorText?.match(/^net::[A-Z0-9_]+/)?.[0] || 'NETWORK_ERROR';
           s.network = { ...s.network, outcome: 'REQUEST_FAILED', errorCode: code };
           // Transport diagnostics only: never request bodies, tokens, URL queries or account identifiers.
-          console.info(JSON.stringify({ event: 'NAUKRI_AUTH_TRANSPORT', ...s.network, host: new URL(request.url()).hostname, resourceType: request.resourceType(), navigation: request.isNavigationRequest() }));
+          console.info(JSON.stringify({ event: 'NAUKRI_AUTH_TRANSPORT', ...s.network, elapsedMs: startedAt ? Date.now() - startedAt : null, host: new URL(request.url()).hostname, resourceType: request.resourceType(), navigation: request.isNavigationRequest() }));
         });
         s.timer = setTimeout(() => { void this.close(owner); }, 300000); s.timer.unref(); this.sessions.set(owner, s);
         return await this.snapshot(s);
@@ -129,6 +138,7 @@ class LoginRelay {
   async fill(owner, body) {
     return this.locked(owner, async () => {
       const s = this.current(owner);
+      if (s.pendingAuth.size) throw error('Naukri is still processing the previous login request. Please wait.', 409);
       if (body.version !== s.version) throw error('Naukri changed its page. Refresh the fields and try again.', 409);
       if (!Array.isArray(body.fields) || !body.fields.length || body.fields.length > 20) throw error('Choose the requested fields.');
       for (const item of body.fields) {
@@ -148,11 +158,12 @@ class LoginRelay {
   async click(owner, body) {
     return this.locked(owner, async () => {
       const s = this.current(owner);
+      if (s.pendingAuth.size) throw error('Naukri is still processing the previous login request. Please wait.', 409);
       if (body.version !== s.version) throw error('Naukri changed its page. Refresh first.', 409);
       const button = s.buttons.find(b => b.id === body.id); if (!button) throw error('Choose a current Naukri login button.');
       const el = s.page.locator(`[data-applybro-login="${button.id}"]`);
       if ((await el.evaluate(el => (el.innerText || el.value || '').replace(/\s+/g, ' ').trim())) !== button.label) throw error('The login button changed. Refresh first.', 409);
-      s.lastAction = button.label; s.network = null;
+      s.lastAction = button.label; s.loginStartedAt = Date.now(); s.network = null;
       await el.click({ timeout: 5000 }); await s.page.waitForTimeout(3000);
       return this.snapshot(s);
     });

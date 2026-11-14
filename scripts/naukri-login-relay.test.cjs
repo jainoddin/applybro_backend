@@ -67,6 +67,18 @@ async function fixture(mode = false) {
     assert.match(view.network.errorCode, /^net::ERR_/); assert.match(view.message, /No sign-in was confirmed/);
     console.log('PASS: transport error reported distinctly from invalid credentials');
   } finally { await failed.dispose(); }
+  const pending = await fixture();
+  try {
+    await pending.start('owner');
+    const session = pending.current('owner'); session.lastAction = 'Login'; session.loginStartedAt = Date.now();
+    session.pendingAuth.set({}, Date.now());
+    let view = await pending.refresh('owner');
+    assert.equal(view.status, 'LOGIN_PROCESSING'); assert.equal(view.fields.length, 0);
+    await assert.rejects(() => pending.click('owner', { version: view.version, id: 'button-0' }), e => e.status === 409);
+    session.loginStartedAt = Date.now() - 25000;
+    view = await pending.refresh('owner'); assert.equal(view.status, 'LOGIN_TIMEOUT'); assert.equal(view.signedIn, false);
+    console.log('PASS: pending login is not an input prompt; bounded timeout and duplicate-login rejection');
+  } finally { await pending.dispose(); }
   const priorTransport = process.env.NAUKRI_HTTP1_ONLY;
   process.env.NAUKRI_HTTP1_ONLY = 'true';
   const compatibility = await fixture();
