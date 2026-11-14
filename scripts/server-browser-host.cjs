@@ -1,10 +1,23 @@
 // Temporary public health/result host; browser control is never exposed.
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { LoginRelay, authenticate } = require('./naukri-login-relay.cjs');
+const relay = new LoginRelay();
 let result = { status: 'STARTING', loginAttempted: false, applicationsSubmitted: 0 };
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'application/json');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  if (req.method === 'POST' && /^\/login\/(start|refresh|fill|click|close)$/.test(req.url)) {
+    try {
+      const owner = await authenticate(req);
+      let text = ''; for await (const chunk of req) { text += chunk; if (Buffer.byteLength(text) > 50000) throw Object.assign(new Error('Request too large.'), { status: 413 }); }
+      let body; try { body = JSON.parse(text || '{}'); } catch { throw Object.assign(new Error('Invalid request.'), { status: 400 }); }
+      const action = req.url.split('/').pop();
+      const data = action === 'start' ? await relay.start(owner) : action === 'refresh' ? await relay.refresh(owner) : action === 'fill' ? await relay.fill(owner, body) : action === 'click' ? await relay.click(owner, body) : await relay.close(owner);
+      return res.end(JSON.stringify(data));
+    } catch (e) { res.writeHead(e.status || 503); return res.end(JSON.stringify({ message: e.status ? e.message : 'Private login action could not complete. Refresh the current Naukri fields.' })); }
+  }
   if (req.method !== 'GET' || !['/', '/health', '/result'].includes(req.url)) {
     res.writeHead(404); return res.end(JSON.stringify({ message: 'Not found' }));
   }
@@ -38,5 +51,5 @@ server.listen(Number(process.env.PORT || 10000), '0.0.0.0', () => {
   };
   child.on('error', () => failed('RUNTIME_FAILED'));
   child.on('exit', code => failed(code === 124 || code === 137 ? 'BROWSER_TIMEOUT' : 'RUNTIME_FAILED'));
-  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { child.kill('SIGTERM'); server.close(() => process.exit(0)); });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => { child.kill('SIGTERM'); await relay.dispose(); server.close(() => process.exit(0)); });
 });
