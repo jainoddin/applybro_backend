@@ -1,5 +1,6 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from "@nestjs/common";
 import { PrismaClient } from "@prisma/client";
+import { databaseErrorSummary } from './database-error';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -11,10 +12,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
         await this.$connect();
         this.logger.log("Connected to PostgreSQL via Prisma!");
       } catch (err) {
-        this.logger.warn("Could not connect to PostgreSQL. Running in offline/fallback mode.");
+        this.logger.error(`PostgreSQL startup connection failed: ${databaseErrorSummary(err)}`);
       }
     } else {
-      this.logger.warn("DATABASE_URL is not set. Running Prisma in fallback mode.");
+      this.logger.error("DATABASE_URL is not set. Database-backed routes are unavailable.");
     }
   }
 
