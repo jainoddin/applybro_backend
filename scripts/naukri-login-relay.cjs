@@ -52,9 +52,22 @@ class LoginRelay {
         const id = String(i); el.setAttribute('data-applybro-login', id);
         return { id, label: label(el) || 'Naukri field', type: el.type || 'text', tag: el.tagName, required: !!el.required, options: el.tagName === 'SELECT' ? [...el.options].slice(0, 60).map(o => ({ value: o.value, label: o.textContent })) : undefined };
       });
-      const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(el => visible(el) && !el.disabled && /^(log ?in|sign in|continue|next|verify(?: otp)?|submit otp|send otp|get otp|resend(?: otp)?|login (?:with|via) otp|use password|login with password)$/i.test((el.innerText || el.value || '').trim())).slice(0, 12).map((el, i) => {
-        const id = 'button-' + i; el.setAttribute('data-applybro-login', id); return { id, label: (el.innerText || el.value).trim() };
-      });
+      const buttonLabel = el => (el.innerText || el.value || '').replace(/\s+/g, ' ').trim();
+      const seen = new Set();
+      const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(el => {
+        const text = buttonLabel(el);
+        if (!visible(el) || el.disabled || !/^(log ?in|sign in|continue|next|verify(?: otp)?|submit otp|send otp|get otp|resend(?: otp)?|login (?:with|via|using) otp|use otp to login|use password|login with password)$/i.test(text)) return false;
+        // Header Login links navigate away instead of submitting the entered form.
+        if (el.tagName === 'A') {
+          if (/^(log ?in|sign in)$/i.test(text)) return false;
+          const target = new URL(el.getAttribute('href') || '#', location.href);
+          if (target.origin !== location.origin) return false;
+        }
+        return true;
+      }).sort((a, b) => Number(b.tagName !== 'A' && !!b.closest('form')) - Number(a.tagName !== 'A' && !!a.closest('form')))
+        .filter(el => { const text = buttonLabel(el).toLowerCase(); if (seen.has(text)) return false; seen.add(text); return true; }).slice(0, 12).map((el, i) => {
+          const id = 'button-' + i; el.setAttribute('data-applybro-login', id); return { id, label: buttonLabel(el) };
+        });
       const headings = [...document.querySelectorAll('h1,h2,h3,.widgetHead,[role=heading]')].filter(visible).map(el => el.textContent.trim().toLowerCase());
       const sections = ['resume', 'key skills', 'employment', 'education', 'profile summary'].filter(x => headings.includes(x)).length;
       const privatePage = /^\/mnjuser\/(homepage|profile)\/?$/.test(location.pathname);
@@ -121,7 +134,7 @@ class LoginRelay {
       if (body.version !== s.version) throw error('Naukri changed its page. Refresh first.', 409);
       const button = s.buttons.find(b => b.id === body.id); if (!button) throw error('Choose a current Naukri login button.');
       const el = s.page.locator(`[data-applybro-login="${button.id}"]`);
-      if ((await el.evaluate(el => (el.innerText || el.value || '').trim())) !== button.label) throw error('The login button changed. Refresh first.', 409);
+      if ((await el.evaluate(el => (el.innerText || el.value || '').replace(/\s+/g, ' ').trim())) !== button.label) throw error('The login button changed. Refresh first.', 409);
       await el.click({ timeout: 5000 }); await s.page.waitForTimeout(1500);
       return this.snapshot(s);
     });

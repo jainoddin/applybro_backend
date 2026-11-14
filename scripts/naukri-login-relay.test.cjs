@@ -12,7 +12,7 @@ async function fixture(blocked = false) {
         const page = await newPage();
         await page.route('**/*', route => {
           const profile = new URL(route.request().url()).pathname.includes('/mnjuser/profile');
-          const html = profile ? '<h1 data-field="name">Fixture Candidate</h1><h2>Resume</h2><h2>Education</h2>' : `<div id="login"><label>Email<input type="email"></label><label>Password<input type="password"></label><button onclick="document.querySelector('#login').hidden=true;document.querySelector('#otp').hidden=false">Login</button></div><div id="otp" hidden><label>OTP<input name="otp"></label><button onclick="location.href='/mnjuser/profile'">Verify OTP</button></div>`;
+          const html = profile ? '<h1 data-field="name">Fixture Candidate</h1><h2>Resume</h2><h2>Education</h2>' : `<header><a href="https://login.naukri.com/nLogin/Login.php">Login</a></header><form id="login" onsubmit="event.preventDefault();document.querySelector('#login').hidden=true;document.querySelector('#otp').hidden=false"><label>Email<input type="email"></label><label>Password<input type="password"></label><button type="submit">Login</button></form><div id="otp" hidden><label>OTP<input name="otp"></label><button onclick="location.href='/mnjuser/profile'">Verify OTP</button></div>`;
           return route.fulfill({ status: blocked ? 403 : 200, contentType: 'text/html', body: blocked ? 'Access Denied' : html });
         }); return page;
       }; return context;
@@ -28,6 +28,8 @@ async function fixture(blocked = false) {
   try {
     let view = await relay.start('owner');
     assert.equal(view.status, 'INPUT_REQUIRED'); assert.equal(view.fields.length, 2);
+    assert.equal(view.buttons.filter(b => b.label === 'Login').length, 1);
+    assert.equal(await relay.current('owner').page.locator(`[data-applybro-login="${view.buttons[0].id}"]`).evaluate(el => el.tagName), 'BUTTON');
     await assert.rejects(() => relay.refresh('another-user'), e => e.status === 410);
     await assert.rejects(() => relay.fill('owner', { version: -1, fields: [] }), e => e.status === 409);
     const email = view.fields.find(f => f.type === 'email'), password = view.fields.find(f => f.type === 'password');
