@@ -10,6 +10,7 @@ const publicAddress = value => {
 const LOGIN = 'https://www.naukri.com/nlogin/login';
 const allowedPage = url => { try { const u = new URL(url); return u.protocol === 'https:' && ['www.naukri.com', 'naukri.com'].includes(u.hostname) && /^\/(nlogin(?:\/|$)|mnjuser\/(?:homepage|profile)(?:\/|$))/.test(u.pathname); } catch { return false; } };
 const error = (message, status = 400) => Object.assign(new Error(message), { status });
+const authRequest = request => { try { const u = new URL(request.url()); return request.method() === 'POST' && /(^|\.)naukri\.com$/i.test(u.hostname) && /login|auth|otp|verify|session/i.test(u.pathname); } catch { return false; } };
 let displayProcess, displayReady;
 async function display() {
   if (process.platform !== 'linux' || process.env.DISPLAY) return process.env.DISPLAY;
@@ -80,6 +81,7 @@ class LoginRelay {
     });
     s.version++; s.fields = view.fields; s.buttons = view.buttons;
     if (!view.signedIn && s.lastAction && !view.challenge && !/error|invalid|incorrect|wrong|unable/i.test(view.message)) view.message = 'Sign-in is not confirmed. Naukri still shows this form after ' + s.lastAction + '. Check the portal preview and response below.';
+    if (!view.signedIn && s.network?.outcome === 'REQUEST_FAILED') view.message = `The Naukri login request failed (${s.network.errorCode || 'network error'}). ${s.network.guardReason ? 'ApplyBro network guard: ' + s.network.guardReason + '. ' : ''}No sign-in was confirmed. ` + view.message;
     const preview = await s.page.screenshot({ type: 'jpeg', quality: 65, mask: [s.page.locator('input,textarea,select')], timeout: 5000 }).then(b => b.toString('base64')).catch(() => null);
     return { ...view, status: view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : 'INPUT_REQUIRED', version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: false, preview, network: s.network || null, lastAction: s.lastAction || null };
   }
@@ -92,21 +94,28 @@ class LoginRelay {
         const screen = await display();
         browser = await this.launch({ headless: false, ...(screen ? { env: { ...process.env, DISPLAY: screen } } : {}), ...(process.platform === 'win32' ? { executablePath: process.env.CLOUD_AGENT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe' } : {}) });
         const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
+        let s;
         await context.route('**/*', async route => {
           const r = route.request(); let u; try { u = new URL(r.url()); } catch { return route.abort(); }
-          if (u.protocol !== 'https:' || u.port && u.port !== '443' || u.username || u.password || /^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[)/i.test(u.hostname)) return route.abort();
-          try { const addresses = await dns.lookup(u.hostname, { all: true }); if (!addresses.length || !addresses.every(x => publicAddress(x.address))) return route.abort(); } catch { return route.abort(); }
-          if (r.isNavigationRequest() && r.frame().parentFrame() === null && !allowedPage(r.url())) return route.abort();
+          const abort = reason => { if (s && authRequest(r)) s.network = { outcome: 'REQUEST_FAILED', guardReason: reason }; return route.abort(); };
+          if (u.protocol !== 'https:' || u.port && u.port !== '443' || u.username || u.password || /^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[)/i.test(u.hostname)) return abort('INVALID_PUBLIC_HTTPS_DESTINATION');
+          try { const addresses = await dns.lookup(u.hostname, { all: true }); if (!addresses.length || !addresses.every(x => publicAddress(x.address))) return abort('NON_PUBLIC_ADDRESS'); } catch { return abort('DNS_LOOKUP_FAILED'); }
+          if (r.isNavigationRequest() && r.frame().parentFrame() === null && !allowedPage(r.url())) return abort('UNSUPPORTED_LOGIN_NAVIGATION');
           return route.continue();
         });
         const page = await context.newPage();
         const response = await page.goto(LOGIN, { waitUntil: 'domcontentloaded', timeout: 20000 });
         if (response?.status() >= 400) { await browser.close(); return { status: 'BLOCKED', httpStatus: response.status(), message: 'Naukri denied this browser. No account was connected.', fields: [], buttons: [] }; }
         await page.waitForTimeout(1500);
-        const s = { browser, page, version: 0, fields: [], buttons: [], expiresAt: Date.now() + 300000 };
-        const authRequest = request => { try { const u = new URL(request.url()); return request.method() === 'POST' && /(^|\.)naukri\.com$/i.test(u.hostname) && /login|auth|otp|verify|session/i.test(u.pathname); } catch { return false; } };
+        s = { browser, page, version: 0, fields: [], buttons: [], expiresAt: Date.now() + 300000 };
         page.on('response', response => { if (authRequest(response.request())) s.network = { outcome: 'RESPONSE', httpStatus: response.status() }; });
-        page.on('requestfailed', request => { if (authRequest(request)) s.network = { outcome: 'REQUEST_FAILED' }; });
+        page.on('requestfailed', request => {
+          if (!authRequest(request)) return;
+          const code = request.failure()?.errorText?.match(/^net::[A-Z0-9_]+/)?.[0] || 'NETWORK_ERROR';
+          s.network = { ...s.network, outcome: 'REQUEST_FAILED', errorCode: code };
+          // Transport diagnostics only: never request bodies, tokens, URL queries or account identifiers.
+          console.info(JSON.stringify({ event: 'NAUKRI_AUTH_TRANSPORT', ...s.network, host: new URL(request.url()).hostname, resourceType: request.resourceType(), navigation: request.isNavigationRequest() }));
+        });
         s.timer = setTimeout(() => { void this.close(owner); }, 300000); s.timer.unref(); this.sessions.set(owner, s);
         return await this.snapshot(s);
       } catch (e) { await this.close(owner); await browser?.close().catch(() => {}); throw error(e.status ? e.message : 'The private Naukri browser could not start. Please try again.', e.status || 503); }

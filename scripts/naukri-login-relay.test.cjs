@@ -11,9 +11,10 @@ async function fixture(mode = false) {
       context.newPage = async () => {
         const page = await newPage();
         await page.route('**/*', route => {
+          if (mode === 'network-failed' && route.request().url().includes('/central-login-services/')) return route.abort('connectionfailed');
           if (mode === 'rejected' && route.request().url().includes('/central-login-services/')) return route.fulfill({ status: 401, contentType: 'application/json', body: '{}' });
           const profile = new URL(route.request().url()).pathname.includes('/mnjuser/profile');
-          const submit = mode === 'rejected' ? "fetch('/central-login-services/v1/login',{method:'POST'}).then(()=>document.querySelector('.error-message').textContent='Invalid login details')" : "document.querySelector('#login').hidden=true;document.querySelector('#otp').hidden=false";
+          const submit = mode === 'network-failed' ? "fetch('/central-login-services/v1/login',{method:'POST'}).catch(()=>document.querySelector('.error-message').textContent='Something went wrong')" : mode === 'rejected' ? "fetch('/central-login-services/v1/login',{method:'POST'}).then(()=>document.querySelector('.error-message').textContent='Invalid login details')" : "document.querySelector('#login').hidden=true;document.querySelector('#otp').hidden=false";
           const html = profile ? '<h1 data-field="name">Fixture Candidate</h1><h2>Resume</h2><h2>Education</h2>' : `<header><a href="https://login.naukri.com/nLogin/Login.php">Login</a></header><form id="login" onsubmit="event.preventDefault();${submit}"><label>Email<input type="email"></label><label>Password<input type="password"></label><button type="submit">Login</button><p class="error-message"></p></form><div id="otp" hidden><label>OTP<input name="otp"></label><button onclick="location.href='/mnjuser/profile'">Verify OTP</button></div>`;
           return route.fulfill({ status: mode === true ? 403 : 200, contentType: 'text/html', body: mode === true ? 'Access Denied' : html });
         }); return page;
@@ -57,5 +58,13 @@ async function fixture(mode = false) {
     assert.match(view.message, /Invalid login details/); assert(view.preview);
     console.log('PASS: rejected login response and portal error shown without claiming sign-in');
   } finally { await rejected.dispose(); }
+  const failed = await fixture('network-failed');
+  try {
+    let view = await failed.start('owner');
+    view = await failed.click('owner', { version: view.version, id: view.buttons[0].id });
+    assert.equal(view.status, 'INPUT_REQUIRED'); assert.equal(view.network.outcome, 'REQUEST_FAILED');
+    assert.match(view.network.errorCode, /^net::ERR_/); assert.match(view.message, /No sign-in was confirmed/);
+    console.log('PASS: transport error reported distinctly from invalid credentials');
+  } finally { await failed.dispose(); }
   console.log('Synthetic pages only. No real account login or application submitted.');
 })().catch(e => { console.error(e.message); process.exitCode = 1; });
