@@ -34,4 +34,3 @@ export class ProfileController {
     return this.profileService.parseResumeWithAi(request.authUser.id, body);
   }
 }
-

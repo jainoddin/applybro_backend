@@ -62,4 +62,3 @@ export class JobsController {
     return this.jobsService.discoverMoreJobs(request.authUser.id);
   }
 }
-

@@ -14,4 +14,3 @@ import { CompanionController } from './companion.controller';
   exports: [JobsService],
 })
 export class JobsModule {}
-

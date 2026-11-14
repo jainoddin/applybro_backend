@@ -104,7 +104,7 @@ Rules:
 
       try {
         const parts: any[] = [];
-        
+
         // Add inline file data for PDF or supported images
         if (mimeType.includes('pdf') || mimeType.includes('image')) {
           parts.push({
@@ -174,4 +174,3 @@ Rules:
     throw lastError || new Error('All Gemini API keys failed or exhausted.');
   }
 }
-

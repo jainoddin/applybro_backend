@@ -245,4 +245,3 @@ export class ProfileService {
     return {...parsed,stored:true,parsed:true,resumeId};
   }
 }
-
