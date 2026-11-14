@@ -20,18 +20,50 @@ export class CloudAgentService {
   const workerOnline=!!heart[0]&&Date.now()-new Date(heart[0].updatedAt).getTime()<90000;
   if(!workerOnline)issues.push('Hosted browser worker is offline.');
   if(!heart[0]?.modelReady)issues.push('AI model connection has not passed the worker startup check.');
-  return {ready:!issues.length,issues,workerOnline,allowedHosts:hosts,emailConfigured:!!(process.env.RESEND_API_KEY&&process.env.CLOUD_AGENT_EMAIL_FROM),handoffMinutes:5,localPilot};
+  const connectionReady=process.env.CLOUD_AGENT_ENABLED==='true'&&/^[a-f0-9]{64}$/i.test(process.env.CLOUD_AGENT_ENCRYPTION_KEY||'')&&workerOnline&&approvedUrl('https://www.naukri.com/mnjuser/profile');
+  return {ready:!issues.length,issues,workerOnline,allowedHosts:hosts,emailConfigured:!!(process.env.RESEND_API_KEY&&process.env.CLOUD_AGENT_EMAIL_FROM),handoffMinutes:5,localPilot,connectionReady};
  }
  async owned(userId:string,id:string){const rows:any[]=await this.db.$queryRaw`SELECT * FROM "AgentRun" WHERE "id"=${id} AND "userId"=${userId}`;if(!rows[0])throw new NotFoundException('Agent task not found.');return rows[0];}
  async status(userId:string){
-  const runs:any[]=await this.db.$queryRaw`SELECT r."id",r."state",r."reason",r."steps",r."createdAt",r."updatedAt",r."interactiveUntil",r."handoffExpires",r."confirmation",a."jobTitle",a."companyName" FROM "AgentRun" r JOIN "JobApplication" a ON a."id"=r."applicationId" WHERE r."userId"=${userId} ORDER BY r."createdAt" DESC LIMIT 30`;
+  const runs:any[]=await this.db.$queryRaw`SELECT r."id",r."kind",r."state",r."reason",r."steps",r."createdAt",r."updatedAt",r."interactiveUntil",r."handoffExpires",r."confirmation",COALESCE(a."jobTitle",'Connect Naukri') AS "jobTitle",COALESCE(a."companyName",'Naukri') AS "companyName" FROM "AgentRun" r LEFT JOIN "JobApplication" a ON a."id"=r."applicationId" WHERE r."userId"=${userId} ORDER BY r."createdAt" DESC LIMIT 30`;
   const preferences:any[]=await this.db.$queryRaw`SELECT "enabled","consentedAt" FROM "AgentPreference" WHERE "userId"=${userId}`;
   const notices:any[]=await this.db.$queryRaw`SELECT DISTINCT ON (n."runId") n."runId",n."state",n."expiresAt" FROM "AgentNotice" n JOIN "AgentRun" r ON r."id"=n."runId" WHERE r."userId"=${userId} ORDER BY n."runId",n."createdAt" DESC`;
   const matches=await this.jobs.getMatchedJobs(userId);
   const user=await this.db.user.findUnique({where:{id:userId},select:{minMatchScore:true}});
   const candidateJobs=matches.jobs.filter(job=>job.status!=='APPLIED'&&job.matchAssessed&&job.matchScore>=(user?.minMatchScore??70)&&approvedUrl(job.applicationUrl)).slice(0,50).map(job=>({id:job.id,title:job.title,company:job.company,score:job.matchScore}));
   const events:any[]=await this.db.$queryRaw`SELECT e."runId",e."kind",e."message",e."createdAt" FROM "AgentEvent" e JOIN "AgentRun" r ON r."id"=e."runId" WHERE r."userId"=${userId} ORDER BY e."createdAt" DESC LIMIT 100`;
-  return {config:await this.config(),enabled:preferences[0]?.enabled===true,runs,notices,candidateJobs,events};
+  const sessions:any[]=await this.db.$queryRaw`SELECT "naukriCheckedAt" FROM "AgentSession" WHERE "userId"=${userId}`;
+  const connection:any[]=await this.db.$queryRaw`SELECT "id","state","reason" FROM "AgentRun" WHERE "userId"=${userId} AND "kind"='CONNECT' ORDER BY "createdAt" DESC LIMIT 1`;
+  const latest=connection[0],savedAt=sessions[0]?.naukriCheckedAt||null;
+  const naukri={status:latest&&['QUEUED','RUNNING','WAITING_USER','BLOCKED','FAILED'].includes(latest.state)?latest.state:savedAt?'SESSION_SAVED':'NOT_CONNECTED',savedAt,runId:latest?.id||null,reason:latest?.reason||''};
+  return {config:await this.config(),enabled:preferences[0]?.enabled===true,runs,notices,candidateJobs,events,naukri};
+ }
+ async connectNaukri(userId:string,body:any){
+  if(body?.consent!==true)throw new BadRequestException('Authorize saving this private browser session first.');
+  if(!(await this.config()).connectionReady)throw new ServiceUnavailableException('Naukri connection requires an online worker, private encryption and an enabled Naukri host.');
+  return this.db.$transaction(async tx=>{
+   await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id"=${userId} FOR UPDATE`;
+   const existing:any[]=await tx.$queryRaw`SELECT "id","state" FROM "AgentRun" WHERE "userId"=${userId} AND "kind"='CONNECT' AND "state" IN ('QUEUED','RUNNING','WAITING_USER') LIMIT 1`;
+   if(existing[0])return existing[0];
+   const id=randomUUID();await tx.$executeRaw`INSERT INTO "AgentRun"("id","userId","kind","url","reason") VALUES (${id},${userId},'CONNECT','https://www.naukri.com/mnjuser/profile','Opening a private Naukri login. No job application will be submitted by this connection task.')`;
+   return {id,state:'QUEUED'};
+  });
+ }
+ async disconnectNaukri(userId:string){
+  await this.db.$transaction(async tx=>{
+   await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id"=${userId} FOR UPDATE`;
+   const rows:any[]=await tx.$queryRaw`SELECT * FROM "AgentSession" WHERE "userId"=${userId} FOR UPDATE`;
+   let state:any={cookies:[],origins:[]};
+   if(rows[0]){try{state=unseal(rows[0].encrypted);}catch{throw new ServiceUnavailableException('Private session cannot be read with the current encryption configuration.');}}
+   const belongs=(domain:string)=>domain.replace(/^\./,'').toLowerCase()==='naukri.com'||domain.replace(/^\./,'').toLowerCase().endsWith('.naukri.com');
+   state.cookies=(state.cookies||[]).filter((cookie:any)=>!belongs(String(cookie.domain||'')));
+   state.origins=(state.origins||[]).filter((origin:any)=>{try{return !belongs(new URL(origin.origin).hostname);}catch{return false;}});
+   const encrypted=seal(state);
+   await tx.$executeRaw`INSERT INTO "AgentSession"("userId","encrypted","revision") VALUES (${userId},${encrypted},1) ON CONFLICT ("userId") DO UPDATE SET "encrypted"=EXCLUDED."encrypted","revision"="AgentSession"."revision"+1,"naukriCheckedAt"=NULL,"updatedAt"=NOW()`;
+   await tx.$executeRaw`UPDATE "AgentRun" SET "state"='CANCELLED',"reason"='Naukri session disconnected by user.',"screen"=NULL,"interactiveUntil"=NULL,"updatedAt"=NOW() WHERE "userId"=${userId} AND "url" LIKE 'https://www.naukri.com/%' AND "state" IN ('QUEUED','RUNNING','WAITING_USER','CONNECTED','BLOCKED','FAILED') AND "submitReservedAt" IS NULL`;
+   await tx.$executeRaw`DELETE FROM "AgentCommand" WHERE "runId" IN (SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "url" LIKE 'https://www.naukri.com/%')`;
+  });
+  return {status:'NOT_CONNECTED'};
  }
  async settings(userId:string,body:any){
   if(typeof body?.enabled!=='boolean')throw new BadRequestException('Choose whether hosted automation is enabled.');
@@ -45,7 +77,7 @@ export class CloudAgentService {
    await tx.$executeRaw`UPDATE "BrowserRun" SET "stage"='CANCELLED',"details"="details" || '{"message":"Switched to hosted browser processing."}'::jsonb,"updatedAt"=NOW() WHERE "userId"=${userId} AND "stage" IN ('CREATED','OPENED','LOGIN_REQUIRED','REVIEW_REQUIRED') AND ("details"->>'autoSubmit'='true' OR "details"->>'autoDiscover'='true' OR "details"->>'autoPrepare'='true')`;
   }
   await tx.$executeRaw`INSERT INTO "AgentPreference"("userId","enabled","consentedAt") VALUES (${userId},${enabled},${consentedAt}) ON CONFLICT ("userId") DO UPDATE SET "enabled"=EXCLUDED."enabled","consentedAt"=EXCLUDED."consentedAt","nextRunAt"=NOW(),"updatedAt"=NOW()`;
-  if(!enabled)await tx.$executeRaw`UPDATE "AgentRun" SET "state"='CANCELLED',"reason"='Hosted automation disabled by user.',"screen"=NULL,"interactiveUntil"=NULL,"updatedAt"=NOW() WHERE "userId"=${userId} AND "state" IN ('QUEUED','RUNNING','WAITING_USER') AND "submitReservedAt" IS NULL`;
+  if(!enabled)await tx.$executeRaw`UPDATE "AgentRun" SET "state"='CANCELLED',"reason"='Hosted automation disabled by user.',"screen"=NULL,"interactiveUntil"=NULL,"updatedAt"=NOW() WHERE "userId"=${userId} AND "kind"='APPLY' AND "state" IN ('QUEUED','RUNNING','WAITING_USER') AND "submitReservedAt" IS NULL`;
   });
   return this.status(userId);
  }
@@ -74,7 +106,7 @@ export class CloudAgentService {
  async queueMatches(userId:string){
   const config=await this.config();if(!config.ready)throw new ServiceUnavailableException(config.issues.join(' '));
   const {user}=await this.checkCandidate(userId);let data=await this.jobs.getMatchedJobs(userId);if(!data.jobs.length)data=await this.jobs.discoverMoreJobs(userId);
-  const pending:any[]=await this.db.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "state" IN ('QUEUED','RUNNING','WAITING_USER','SUBMITTING','UNKNOWN')`;
+  const pending:any[]=await this.db.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "state" IN ('QUEUED','RUNNING','WAITING_USER','SUBMITTING','UNKNOWN')`;
   const today=new Date(new Date(Date.now()+19800000).toISOString().slice(0,10)+'T00:00:00+05:30');
   const sent=await this.db.jobApplication.findMany({where:{userId,status:'APPLIED',appliedAt:{gte:today}}});
   const confirmed=sent.filter(a=>{const m:any=a.matchReasons;return m?.providerReceipt||m?.browserConfirmation||m?.agentConfirmation;}).length;
@@ -112,6 +144,7 @@ export class CloudAgentService {
   if(body.kind==='CLICK'&&(!Number.isFinite(body.x)||!Number.isFinite(body.y)||body.x<0||body.x>1280||body.y<0||body.y>900))throw new BadRequestException('Invalid coordinates.');
   if(body.kind==='TYPE'&&(!Number.isInteger(body.element)||typeof body.value!=='string'||body.value.length>2000))throw new BadRequestException('Choose a field and enter a value.');
   if(body.kind==='UPLOAD'&&!Number.isInteger(body.element))throw new BadRequestException('Choose the resume field.');
+  if(r.kind==='CONNECT'&&body.kind==='UPLOAD')throw new BadRequestException('Connection tasks only establish login; resumes are handled by application tasks.');
   const payload={kind:body.kind,x:body.x,y:body.y,element:body.element,value:body.value,direction:body.direction==='up'?'up':'down'};
   const commandId=randomUUID(),expires=new Date(Date.now()+120000);
   await this.db.$executeRaw`INSERT INTO "AgentCommand"("id","runId","encrypted","screenVersion","expiresAt") VALUES (${commandId},${id},${seal(payload)},${r.screenVersion},${expires})`;
@@ -120,7 +153,7 @@ export class CloudAgentService {
  async cancel(userId:string,id:string){const r=await this.owned(userId,id);if(['SUBMITTING','UNKNOWN','CONFIRMED'].includes(r.state))throw new BadRequestException('Submission may already have occurred. Verify its outcome before retrying.');await this.db.$executeRaw`UPDATE "AgentRun" SET "state"='CANCELLED',"screen"=NULL,"interactiveUntil"=NULL,"updatedAt"=NOW() WHERE "id"=${id} AND "userId"=${userId}`;return {cancelled:true};}
  async reserve(id:string,leaseOwner?:string){
   return this.db.$transaction(async tx=>{
-   const rows:any[]=await tx.$queryRaw`SELECT * FROM "AgentRun" WHERE "id"=${id} FOR UPDATE`;const run=rows[0];if(!run||!['RUNNING','WAITING_USER'].includes(run.state)||run.submitReservedAt)throw Error('Submission is not retryable.');
+   const rows:any[]=await tx.$queryRaw`SELECT * FROM "AgentRun" WHERE "id"=${id} FOR UPDATE`;const run=rows[0];if(!run||run.kind==='CONNECT'||!['RUNNING','WAITING_USER'].includes(run.state)||run.submitReservedAt)throw Error('Submission is not retryable.');
    if(leaseOwner&&(run.leaseOwner!==leaseOwner||!run.leaseUntil||run.leaseUntil<new Date()))throw Error('The worker no longer owns this task.');
    if(!run.resumeUploaded)throw Error('The private resume upload must complete before submission.');
    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id"=${run.userId} FOR UPDATE`;

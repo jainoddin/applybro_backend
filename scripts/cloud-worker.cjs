@@ -22,15 +22,16 @@ async function main(){
  const event=async(id,kind,message)=>{const eid=randomUUID();await db.$executeRaw`INSERT INTO "AgentEvent"("id","runId","kind","message") VALUES (${eid},${id},${kind},${String(message).slice(0,600)})`;};
  const update=async(id,state,reason)=>{await db.$executeRaw`UPDATE "AgentRun" SET "state"=${state},"reason"=${String(reason).slice(0,600)},"updatedAt"=NOW() WHERE "id"=${id} AND "leaseOwner"=${owner} AND "state" NOT IN ('CANCELLED','CONFIRMED')`;};
  async function run(initial){
-  let context,page,observation,history=[],blocked='',lastShot=0;const privateFields=[];
-  const reviewDuration=reviewWindow();let reviewUntil=0;
+  const connectionOnly=initial.kind==='CONNECT';
+  let context,page,observation,history=[],blocked='',lastShot=0,sessionRevision=0;const privateFields=[];
+  const reviewDuration=connectionOnly?0:reviewWindow();let reviewUntil=0;
   const privateImage=()=>page.screenshot({type:'png',mask:[...page.frames().map(frame=>frame.locator('input[type="password"],input[autocomplete="one-time-code"],input[name*="otp" i]')),...privateFields.filter(f=>page.frames()[f.frame]).map(f=>element(page,f.id,f.frame))]});
   const user=await db.user.findUnique({where:{id:initial.userId}}),facts=factsFor(user);
-  const expectedJob=await db.jobApplication.findFirst({where:{id:initial.applicationId,userId:initial.userId}});
-  const resumes=await db.$queryRaw`SELECT "fileName","fileBytes","mimeType" FROM "Resume" WHERE "userId"=${initial.userId} AND "id"=${initial.resumeId}`;
+  const expectedJob=connectionOnly?null:await db.jobApplication.findFirst({where:{id:initial.applicationId,userId:initial.userId}});
+  const resumes=connectionOnly?[]:await db.$queryRaw`SELECT "fileName","fileBytes","mimeType" FROM "Resume" WHERE "userId"=${initial.userId} AND "id"=${initial.resumeId}`;
   const resume=resumes[0];
   const timer=setInterval(()=>heartbeat(db,initial.id,initial.userId,owner).catch(()=>{}),10000);
-  const saveSession=async()=>{if(!context||(await get(initial.id))?.leaseOwner!==owner)return;const encrypted=seal(await context.storageState());await db.$executeRaw`INSERT INTO "AgentSession"("userId","encrypted") VALUES (${initial.userId},${encrypted}) ON CONFLICT ("userId") DO UPDATE SET "encrypted"=EXCLUDED."encrypted","updatedAt"=NOW()`;};
+  const saveSession=async()=>{const run=await get(initial.id);if(!context||run?.leaseOwner!==owner||run.state==='CANCELLED')return 0;const encrypted=seal(await context.storageState());return db.$executeRaw`INSERT INTO "AgentSession"("userId","encrypted","revision") VALUES (${initial.userId},${encrypted},${sessionRevision}) ON CONFLICT ("userId") DO UPDATE SET "encrypted"=EXCLUDED."encrypted","updatedAt"=NOW() WHERE "AgentSession"."revision"=EXCLUDED."revision"`;};
   const uploadSaved=async()=>{await db.$executeRaw`UPDATE "AgentRun" SET "resumeUploaded"=TRUE WHERE "id"=${initial.id}`;};
   const screen=async()=>{
    observation=await observe(page);const image=await privateImage().catch(()=>null);
@@ -66,8 +67,9 @@ async function main(){
    return false;
   }
   try{
-   if(!resume?.fileBytes)throw Error('The task private resume is unavailable.');
-   const sessions=await db.$queryRaw`SELECT "encrypted" FROM "AgentSession" WHERE "userId"=${initial.userId}`;
+   if(!connectionOnly&&!resume?.fileBytes)throw Error('The task private resume is unavailable.');
+   const sessions=await db.$queryRaw`SELECT "encrypted","revision" FROM "AgentSession" WHERE "userId"=${initial.userId}`;
+   sessionRevision=sessions[0]?.revision||0;
    context=await browser.newContext({viewport:{width:1280,height:900},acceptDownloads:false,serviceWorkers:'block',...(sessions[0]?{storageState:unseal(sessions[0].encrypted)}:{})});
    context.on('page',popup=>{page=popup;});page=await context.newPage();
    await context.route('**/*',async route=>{
@@ -76,6 +78,19 @@ async function main(){
     return route.continue();
    });
    if(context.routeWebSocket)await context.routeWebSocket('**/*',socket=>socket.close());
+   if(connectionOnly){
+    await openProfile(page);
+    while(!(await profileState(page)).signedIn){
+     if(!await waitForUser('Sign in to Naukri in this private browser. Complete OTP/CAPTCHA yourself, then Continue to save the encrypted session. This connection task never applies to jobs.'))return;
+     await openProfile(page);
+    }
+    if(!await saveSession())throw Error('Session was disconnected while connecting.');
+    const checked=await db.$executeRaw`UPDATE "AgentSession" SET "naukriCheckedAt"=NOW() WHERE "userId"=${initial.userId} AND "revision"=${sessionRevision}`;
+    if(!checked)throw Error('Session was disconnected while connecting.');
+    await update(initial.id,'CONNECTED','Signed-in Naukri profile observed; browser session saved encrypted. It will be rechecked before applying.');
+    await event(initial.id,'SESSION','Naukri session saved. No job application was submitted.');
+    return;
+   }
    const jobUrl=expectedJob.matchReasons?.url||initial.url;
    if(isNaukriJob(jobUrl)){
     await openProfile(page);
@@ -134,7 +149,7 @@ async function main(){
     await db.$executeRaw`UPDATE "AgentRun" SET "steps"="steps"+1,"url"=${new URL(page.url()).origin+new URL(page.url()).pathname},"updatedAt"=NOW() WHERE "id"=${r.id}`;
     await event(r.id,'ACTION',action.kind+' completed.');await saveSession();await sleep(1200);
    }
-  }catch(e){const r=await get(initial.id);if(e.retryable&&r?.state==='RUNNING'&&!r.submitReservedAt&&r.retryCount<3){const next=new Date(Date.now()+60000*2**r.retryCount);await db.$executeRaw`UPDATE "AgentRun" SET "state"='QUEUED',"retryCount"="retryCount"+1,"nextAttemptAt"=${next},"reason"='Model temporarily unavailable; bounded retry scheduled before submission.' WHERE "id"=${initial.id} AND "leaseOwner"=${owner}`;}else await update(initial.id,r?.state==='SUBMITTING'?'UNKNOWN':'FAILED',e.portalBlocked?e.message:'Browser or model service unavailable. No automatic retry after a possible submission.');}
+  }catch(e){const r=await get(initial.id);if(e.retryable&&r?.state==='RUNNING'&&!r.submitReservedAt&&r.retryCount<3){const next=new Date(Date.now()+60000*2**r.retryCount);await db.$executeRaw`UPDATE "AgentRun" SET "state"='QUEUED',"retryCount"="retryCount"+1,"nextAttemptAt"=${next},"reason"='Model temporarily unavailable; bounded retry scheduled before submission.' WHERE "id"=${initial.id} AND "leaseOwner"=${owner}`;}else await update(initial.id,r?.state==='SUBMITTING'?'UNKNOWN':connectionOnly&&e.portalBlocked?'BLOCKED':'FAILED',e.portalBlocked?e.message:'Browser or model service unavailable. No automatic retry after a possible submission.');}
   finally{clearInterval(timer);await saveSession().catch(()=>{});await context?.close().catch(()=>{});await db.$executeRaw`UPDATE "AgentRun" SET "state"=CASE WHEN "state"='RUNNING' AND "submitReservedAt" IS NULL THEN 'QUEUED' WHEN "state"='SUBMITTING' THEN 'UNKNOWN' ELSE "state" END,"leaseOwner"=NULL,"leaseUntil"=NULL,"screen"=NULL,"interactiveUntil"=NULL WHERE "id"=${initial.id} AND "leaseOwner"=${owner}`;await db.$executeRaw`DELETE FROM "AgentUserLease" WHERE "userId"=${initial.userId} AND "runId"=${initial.id} AND "owner"=${owner}`;}
  }
  async function notices(){
@@ -151,11 +166,10 @@ async function main(){
   await recover(db);
   await db.$executeRaw`DELETE FROM "AgentCommand" WHERE "expiresAt"<NOW()`;
   await db.$executeRaw`UPDATE "AgentNotice" SET "state"='EXPIRED',"encrypted"='' WHERE "state"='PENDING' AND "expiresAt"<NOW()`;
-  if(!modelReady){await sleep(1000);continue;}
-  if(tick++%15===0){await notices();if(!localPilot){const prefs=await db.$queryRaw`UPDATE "AgentPreference" SET "nextRunAt"=NOW()+INTERVAL '6 hours' WHERE "enabled"=TRUE AND "nextRunAt"<=NOW() RETURNING "userId"`;for(const pref of prefs)try{await service.queueMatches(pref.userId);}catch{}}}
+  if(tick++%15===0){await notices();if(modelReady&&!localPilot){const prefs=await db.$queryRaw`UPDATE "AgentPreference" SET "nextRunAt"=NOW()+INTERVAL '6 hours' WHERE "enabled"=TRUE AND "nextRunAt"<=NOW() RETURNING "userId"`;for(const pref of prefs)try{await service.queueMatches(pref.userId);}catch{}}}
   while(active.size<(localPilot?1:Math.min(4,Math.max(1,Number(process.env.CLOUD_AGENT_CONCURRENCY)||1)))&&(!localPilot||!pilotClaimed)){
-   const rows=await claim(db,owner);
-   if(!rows[0])break;pilotClaimed=true;const promise=run(rows[0]).catch(()=>{});active.add(promise);promise.finally(()=>{active.delete(promise);if(localPilot)stopping=true;});
+   const rows=await claim(db,owner,!modelReady);
+   if(!rows[0])break;const application=rows[0].kind!=='CONNECT';if(application)pilotClaimed=true;const promise=run(rows[0]).catch(()=>{});active.add(promise);promise.finally(()=>{active.delete(promise);if(localPilot&&application)stopping=true;});
   }
   await sleep(1000);
  }}finally{await Promise.allSettled([...active]);await browser.close();await app.close();}

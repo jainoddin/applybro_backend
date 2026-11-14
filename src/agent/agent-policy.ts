@@ -1,6 +1,6 @@
 import { createCipheriv,createDecipheriv,createHash,randomBytes } from 'crypto';
 import { isIP } from 'net';
-export const terminalStates=new Set(['CONFIRMED','FAILED','CANCELLED','SKIPPED']);
+export const terminalStates=new Set(['CONFIRMED','FAILED','CANCELLED','SKIPPED','CONNECTED','BLOCKED']);
 export function localPilotEnabled(env:Record<string,string|undefined>=process.env){
  if(env.CLOUD_AGENT_LOCAL_PILOT!=='true')return false;
  try{const u=new URL(env.CLOUD_AGENT_PUBLIC_ORIGIN||'');return u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname);}catch{return false;}

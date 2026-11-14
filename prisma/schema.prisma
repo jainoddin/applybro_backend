@@ -178,9 +178,10 @@ model AgentRun {
  id String @id
  userId String
  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
- applicationId String
- application JobApplication @relation(fields:[applicationId],references:[id],onDelete:Cascade)
- resumeId String
+ kind String @default("APPLY")
+ applicationId String?
+ application JobApplication? @relation(fields:[applicationId],references:[id],onDelete:Cascade)
+ resumeId String?
  url String
  state String @default("QUEUED")
  reason String @default("")
@@ -210,6 +211,8 @@ model AgentSession {
  userId String @id
  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
  encrypted String
+ revision Int @default(0)
+ naukriCheckedAt DateTime? @db.Timestamptz(6)
  updatedAt DateTime @default(now()) @db.Timestamptz(6)
 }
 model AgentCommand {

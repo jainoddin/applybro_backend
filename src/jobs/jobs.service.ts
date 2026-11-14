@@ -20,7 +20,7 @@ export class JobsService {
     const user=await this.prisma.user.findUnique({where:{id:userId},include:{preferences:true}});
     const live = apps.filter(app=>isLive(app)&&roleMatches(app.jobTitle,user?.preferences?.titles||[])).sort((a,b)=>b.matchScore-a.matchScore);
     const confirmed = apps.filter(app => isLive(app)&&app.status === ApplicationStatus.APPLIED && (meta(app).providerReceipt||meta(app).browserConfirmation||meta(app).agentConfirmation));
-    const runs:any[]=await this.prisma.$queryRaw`SELECT "applicationId","stage","updatedAt" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' UNION ALL SELECT "applicationId",CASE "state" WHEN 'QUEUED' THEN 'CREATED' WHEN 'RUNNING' THEN 'OPENED' WHEN 'WAITING_USER' THEN 'REVIEW_REQUIRED' ELSE "state" END AS "stage","updatedAt" FROM "AgentRun" WHERE "userId"=${userId} ORDER BY "updatedAt" DESC`;
+    const runs:any[]=await this.prisma.$queryRaw`SELECT "applicationId","stage","updatedAt" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' UNION ALL SELECT "applicationId",CASE "state" WHEN 'QUEUED' THEN 'CREATED' WHEN 'RUNNING' THEN 'OPENED' WHEN 'WAITING_USER' THEN 'REVIEW_REQUIRED' ELSE "state" END AS "stage","updatedAt" FROM "AgentRun" WHERE "userId"=${userId} AND "kind"='APPLY' ORDER BY "updatedAt" DESC`;
     const latest=new Map<string,string>();for(const run of runs)if(run.applicationId&&!latest.has(run.applicationId))latest.set(run.applicationId,run.stage);
     const active=[...latest.values()].filter(stage=>['CREATED','OPENED','SUBMITTING'].includes(stage));
     const needsReview=[...latest.values()].filter(stage=>stage==='REVIEW_REQUIRED').length;

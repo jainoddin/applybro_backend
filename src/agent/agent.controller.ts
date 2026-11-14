@@ -5,6 +5,8 @@ import { CloudAgentService } from './agent.service';
 export class CloudAgentController {
  constructor(private readonly agent:CloudAgentService){}
  @Get('status') status(@Req()req:any){return this.agent.status(req.authUser.id);}
+ @Post('portals/naukri/connect') connect(@Req()req:any,@Body()body:any){return this.agent.connectNaukri(req.authUser.id,body);}
+ @Post('portals/naukri/disconnect') disconnect(@Req()req:any){return this.agent.disconnectNaukri(req.authUser.id);}
  @Post('settings') settings(@Req()req:any,@Body()body:any){return this.agent.settings(req.authUser.id,body);}
  @Post('queue') queue(@Req()req:any,@Body()body:any){return body?.applicationId!==undefined?this.agent.queueOne(req.authUser.id,body.applicationId):this.agent.queueMatches(req.authUser.id);}
  @Get('runs/:id/screen') screen(@Req()req:any,@Param('id')id:string){return this.agent.screen(req.authUser.id,id);}

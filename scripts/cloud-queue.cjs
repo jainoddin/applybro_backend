@@ -1,7 +1,9 @@
-async function claim(db,owner){return db.$queryRaw`
+async function claim(db,owner,connectionsOnly=false,userId=null){return db.$queryRaw`
  WITH candidate AS (
- SELECT r."id",r."userId" FROM "AgentRun" r JOIN "AgentPreference" p ON p."userId"=r."userId"
- WHERE r."state"='QUEUED' AND r."nextAttemptAt"<=NOW() AND p."enabled"=TRUE
+ SELECT r."id",r."userId" FROM "AgentRun" r LEFT JOIN "AgentPreference" p ON p."userId"=r."userId"
+ WHERE r."state"='QUEUED' AND r."nextAttemptAt"<=NOW() AND (r."kind"='CONNECT' OR p."enabled"=TRUE)
+ AND (${connectionsOnly}=FALSE OR r."kind"='CONNECT')
+ AND (${userId}::TEXT IS NULL OR r."userId"=${userId})
  AND NOT EXISTS(SELECT 1 FROM "AgentUserLease" l WHERE l."userId"=r."userId" AND l."expiresAt">NOW())
  ORDER BY r."createdAt" FOR UPDATE OF r SKIP LOCKED LIMIT 1
  ), lease AS (

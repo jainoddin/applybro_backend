@@ -80,7 +80,25 @@ guarantee portal access. Configure the review range in `cloud-agent.env.example`
 ### Naukri pilot flow
 
 Explicitly enable `www.naukri.com` in the API and worker's allowed-host settings.
-Use the hosted-agent screen to choose one assessed job for the first pilot run.
+Apply `npm run agent:setup` before deploying the connection UI/API. This adds
+login-only task support and session-revision metadata without deleting application data.
+Use **Connect Naukri** on the hosted-agent screen and authorize encrypted session
+storage. The connection task does not require a resume or auto-apply consent and
+cannot reserve a submission. It can run without a vision model because login is
+controlled only by the user. An online configured browser worker is still required.
+Private login/OTP commands are transient, encrypted, consumed once and expired;
+there is no reusable email/password vault and they are not sent to the planner.
+The UI reports `SESSION_SAVED` only after observing the protected editable profile;
+blocked pages report `BLOCKED`, never a successful connection. The saved session may expire.
+
+**Disconnect Naukri** removes only Naukri cookies and local-storage origins,
+cancels safe unsubmitted Naukri tasks, and increments the session revision. Stale
+workers cannot write the revoked session back. Other employer sessions are preserved.
+Connection tasks are excluded from application counters and daily queue budgets.
+Run `npm run agent:connection-smoke` for disposable database fixture verification.
+
+Then choose one assessed job for the first pilot run and separately authorize
+automatic applications within the daily limit.
 The worker opens an isolated Naukri profile in its server browser. The user signs
 in through the private screenshot controls when prompted; local companion login
 is never treated as a cloud login. The worker uploads the saved private resume and
