@@ -50,7 +50,7 @@ class LoginRelay {
       for (const el of document.querySelectorAll('[data-applybro-login]')) el.removeAttribute('data-applybro-login');
       const fields = [...document.querySelectorAll('input,textarea,select')].filter(el => visible(el) && !el.disabled && !el.readOnly && !['hidden', 'submit', 'button', 'file', 'reset', 'image'].includes(el.type)).slice(0, 20).map((el, i) => {
         const id = String(i); el.setAttribute('data-applybro-login', id);
-        return { id, label: label(el) || 'Naukri field', type: el.type || 'text', tag: el.tagName, required: !!el.required, options: el.tagName === 'SELECT' ? [...el.options].slice(0, 60).map(o => ({ value: o.value, label: o.textContent })) : undefined };
+        return { id, label: label(el) || 'Naukri field', type: el.type || 'text', tag: el.tagName, required: !!el.required, filled: ['checkbox', 'radio'].includes(el.type) ? el.checked : !!el.value, options: el.tagName === 'SELECT' ? [...el.options].slice(0, 60).map(o => ({ value: o.value, label: o.textContent })) : undefined };
       });
       const buttonLabel = el => (el.innerText || el.value || '').replace(/\s+/g, ' ').trim();
       const seen = new Set();
@@ -75,11 +75,13 @@ class LoginRelay {
       const signedIn = privatePage && !fields.some(f => f.type === 'password') && (sections >= 2 || profileLink && /profile performance/i.test(document.body.innerText));
       const name = signedIn ? [...document.querySelectorAll('[data-field=name],.user-name,.userName,.name,h1')].find(visible)?.textContent?.trim().slice(0, 120) || null : null;
       const challenge = [...document.querySelectorAll('iframe[src*=captcha],[id*=captcha i]')].some(visible);
-      const messages = [...document.querySelectorAll('[role=alert],.error,.error-message')].filter(visible).map(el => el.innerText).filter(Boolean).join(' ').slice(0, 400);
+      const messages = [...document.querySelectorAll('[role=alert],[class*=error i],.err,.err-msg,.errMsg,.formTextErr')].filter(visible).filter(el => el.innerText && el.innerText.length < 400).map(el => el.innerText.trim()).filter(Boolean).filter((x,i,all) => all.indexOf(x) === i).join(' ').slice(0, 400);
       return { fields, buttons, signedIn, name, challenge, message: signedIn ? 'Signed-in Naukri profile observed.' : messages || 'Enter the fields requested by Naukri, then choose its login or verification button.' };
     });
     s.version++; s.fields = view.fields; s.buttons = view.buttons;
-    return { ...view, status: view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : 'INPUT_REQUIRED', version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: false };
+    if (!view.signedIn && s.lastAction && !view.challenge && !/error|invalid|incorrect|wrong|unable/i.test(view.message)) view.message = 'Sign-in is not confirmed. Naukri still shows this form after ' + s.lastAction + '. Check the portal preview and response below.';
+    const preview = await s.page.screenshot({ type: 'jpeg', quality: 65, mask: [s.page.locator('input,textarea,select')], timeout: 5000 }).then(b => b.toString('base64')).catch(() => null);
+    return { ...view, status: view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : 'INPUT_REQUIRED', version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: false, preview, network: s.network || null, lastAction: s.lastAction || null };
   }
   async start(owner) {
     return this.locked(owner, async () => {
@@ -102,6 +104,9 @@ class LoginRelay {
         if (response?.status() >= 400) { await browser.close(); return { status: 'BLOCKED', httpStatus: response.status(), message: 'Naukri denied this browser. No account was connected.', fields: [], buttons: [] }; }
         await page.waitForTimeout(1500);
         const s = { browser, page, version: 0, fields: [], buttons: [], expiresAt: Date.now() + 300000 };
+        const authRequest = request => { try { const u = new URL(request.url()); return request.method() === 'POST' && /(^|\.)naukri\.com$/i.test(u.hostname) && /login|auth|otp|verify|session/i.test(u.pathname); } catch { return false; } };
+        page.on('response', response => { if (authRequest(response.request())) s.network = { outcome: 'RESPONSE', httpStatus: response.status() }; });
+        page.on('requestfailed', request => { if (authRequest(request)) s.network = { outcome: 'REQUEST_FAILED' }; });
         s.timer = setTimeout(() => { void this.close(owner); }, 300000); s.timer.unref(); this.sessions.set(owner, s);
         return await this.snapshot(s);
       } catch (e) { await this.close(owner); await browser?.close().catch(() => {}); throw error(e.status ? e.message : 'The private Naukri browser could not start. Please try again.', e.status || 503); }
@@ -135,7 +140,8 @@ class LoginRelay {
       const button = s.buttons.find(b => b.id === body.id); if (!button) throw error('Choose a current Naukri login button.');
       const el = s.page.locator(`[data-applybro-login="${button.id}"]`);
       if ((await el.evaluate(el => (el.innerText || el.value || '').replace(/\s+/g, ' ').trim())) !== button.label) throw error('The login button changed. Refresh first.', 409);
-      await el.click({ timeout: 5000 }); await s.page.waitForTimeout(1500);
+      s.lastAction = button.label; s.network = null;
+      await el.click({ timeout: 5000 }); await s.page.waitForTimeout(3000);
       return this.snapshot(s);
     });
   }
