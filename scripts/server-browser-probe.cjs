@@ -21,11 +21,15 @@ if (serving) {
   }
   const browser = await chromium.launch({
     headless: false,
+    ...(process.env.NAUKRI_HTTP1_ONLY === 'true' ? { args: ['--disable-http2', '--disable-quic'] } : {}),
     ...(process.env.CLOUD_AGENT_CHROME_PATH ? { executablePath: process.env.CLOUD_AGENT_CHROME_PATH } : {}),
   });
   try {
     const context = await browser.newContext();
     const page = await context.newPage();
+    const network = await context.newCDPSession(page); await network.send('Network.enable');
+    let documentProtocol = null;
+    network.on('Network.responseReceived', e => { if (e.type === 'Document') documentProtocol = e.response.protocol; });
     const response = await page.goto('https://www.naukri.com/nlogin/login', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
     const httpStatus = response?.status();
@@ -36,6 +40,7 @@ if (serving) {
       browserMode: 'headed', displayAvailable: !!process.env.DISPLAY || process.platform !== 'linux',
       status: httpStatus >= 400 ? 'BLOCKED' : passwordField ? 'LOGIN_FORM_AVAILABLE' : 'NOT_VERIFIED',
       httpStatus, pageTitle: await page.title(),
+      documentProtocol,
       denialReference: denied ? body.match(/Reference\s*#[\w.:-]+/i)?.[0] || null : null,
       loginAttempted: false, applicationsSubmitted: 0,
     };

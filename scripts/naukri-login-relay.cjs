@@ -83,7 +83,7 @@ class LoginRelay {
     if (!view.signedIn && s.lastAction && !view.challenge && !/error|invalid|incorrect|wrong|unable/i.test(view.message)) view.message = 'Sign-in is not confirmed. Naukri still shows this form after ' + s.lastAction + '. Check the portal preview and response below.';
     if (!view.signedIn && s.network?.outcome === 'REQUEST_FAILED') view.message = `The Naukri login request failed (${s.network.errorCode || 'network error'}). ${s.network.guardReason ? 'ApplyBro network guard: ' + s.network.guardReason + '. ' : ''}No sign-in was confirmed. ` + view.message;
     const preview = await s.page.screenshot({ type: 'jpeg', quality: 65, mask: [s.page.locator('input,textarea,select')], timeout: 5000 }).then(b => b.toString('base64')).catch(() => null);
-    return { ...view, status: view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : 'INPUT_REQUIRED', version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: false, preview, network: s.network || null, lastAction: s.lastAction || null };
+    return { ...view, status: view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : 'INPUT_REQUIRED', version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: false, preview, network: s.network || null, lastAction: s.lastAction || null, transport: s.transport };
   }
   async start(owner) {
     return this.locked(owner, async () => {
@@ -92,7 +92,10 @@ class LoginRelay {
       this.opening++; let browser;
       try {
         const screen = await display();
-        browser = await this.launch({ headless: false, ...(screen ? { env: { ...process.env, DISPLAY: screen } } : {}), ...(process.platform === 'win32' ? { executablePath: process.env.CLOUD_AGENT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe' } : {}) });
+        const http1Only = process.env.NAUKRI_HTTP1_ONLY === 'true';
+        // Opt-in transport compatibility for observed HTTP/2 protocol failures.
+        // HTTPS certificate validation and all destination guards remain enabled.
+        browser = await this.launch({ headless: false, ...(http1Only ? { args: ['--disable-http2', '--disable-quic'] } : {}), ...(screen ? { env: { ...process.env, DISPLAY: screen } } : {}), ...(process.platform === 'win32' ? { executablePath: process.env.CLOUD_AGENT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe' } : {}) });
         const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
         let s;
         await context.route('**/*', async route => {
@@ -107,7 +110,7 @@ class LoginRelay {
         const response = await page.goto(LOGIN, { waitUntil: 'domcontentloaded', timeout: 20000 });
         if (response?.status() >= 400) { await browser.close(); return { status: 'BLOCKED', httpStatus: response.status(), message: 'Naukri denied this browser. No account was connected.', fields: [], buttons: [] }; }
         await page.waitForTimeout(1500);
-        s = { browser, page, version: 0, fields: [], buttons: [], expiresAt: Date.now() + 300000 };
+        s = { browser, page, version: 0, fields: [], buttons: [], transport: http1Only ? 'HTTP1_COMPATIBILITY' : 'BROWSER_DEFAULT', expiresAt: Date.now() + 300000 };
         page.on('response', response => { if (authRequest(response.request())) s.network = { outcome: 'RESPONSE', httpStatus: response.status() }; });
         page.on('requestfailed', request => {
           if (!authRequest(request)) return;

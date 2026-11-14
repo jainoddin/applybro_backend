@@ -41,4 +41,6 @@ The frontend same-origin backend proxy forwards only the five exact login action
 
 Run `node scripts/naukri-login-relay.test.cjs` for synthetic email/password → OTP → protected-profile checks, stale-page rejection, no secret echo, owner isolation, and blocked-page handling. No real credentials or employer submissions are used by those fixtures.
 
+`NAUKRI_HTTP1_ONLY=true` is an opt-in transport compatibility setting for observed `net::ERR_HTTP2_PROTOCOL_ERROR` failures. It disables Chromium HTTP/2 and QUIC while retaining HTTPS certificate validation and the network guards. The public startup probe records the negotiated document protocol. This setting does not claim to fix rejected credentials or override denied access. No automatic credential replay is performed; a user must explicitly reconnect and retry.
+
 Official headed Linux setup: https://playwright.dev/docs/ci#running-headed

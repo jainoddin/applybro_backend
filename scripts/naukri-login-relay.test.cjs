@@ -4,6 +4,7 @@ const { LoginRelay, authenticate, allowedPage } = require('./naukri-login-relay.
 async function fixture(mode = false) {
   const relay = new LoginRelay();
   relay.launch = async options => {
+    relay.launchOptions = options;
     const browser = await chromium.launch({ ...options, headless: true });
     const newContext = browser.newContext.bind(browser);
     browser.newContext = async options => {
@@ -66,5 +67,15 @@ async function fixture(mode = false) {
     assert.match(view.network.errorCode, /^net::ERR_/); assert.match(view.message, /No sign-in was confirmed/);
     console.log('PASS: transport error reported distinctly from invalid credentials');
   } finally { await failed.dispose(); }
+  const priorTransport = process.env.NAUKRI_HTTP1_ONLY;
+  process.env.NAUKRI_HTTP1_ONLY = 'true';
+  const compatibility = await fixture();
+  try {
+    const view = await compatibility.start('owner');
+    assert.equal(view.transport, 'HTTP1_COMPATIBILITY');
+    assert.deepEqual(compatibility.launchOptions.args, ['--disable-http2', '--disable-quic']);
+    assert.notEqual(compatibility.launchOptions.ignoreHTTPSErrors, true);
+    console.log('PASS: opt-in HTTP/1 compatibility; no TLS verification bypass flags');
+  } finally { await compatibility.dispose(); if (priorTransport === undefined) delete process.env.NAUKRI_HTTP1_ONLY; else process.env.NAUKRI_HTTP1_ONLY = priorTransport; }
   console.log('Synthetic pages only. No real account login or application submitted.');
 })().catch(e => { console.error(e.message); process.exitCode = 1; });
