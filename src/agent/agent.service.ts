@@ -10,6 +10,7 @@ export class CloudAgentService {
  constructor(private readonly db:PrismaService,private readonly jobs:JobsService){}
  async config(){
   const issues=[];if(process.env.CLOUD_AGENT_ENABLED!=='true')issues.push('Server-side agent is not enabled by the operator.');
+  if(!process.env.RESEND_API_KEY||!process.env.CLOUD_AGENT_EMAIL_FROM)issues.push('Verification email sender is not configured.');
   if(!/^[a-f0-9]{64}$/i.test(process.env.CLOUD_AGENT_ENCRYPTION_KEY||''))issues.push('Private session encryption is not configured.');
   if(!process.env.CLOUD_AGENT_MODEL||!(process.env.CLOUD_AGENT_API_KEY||process.env.GEMINI_API_KEYS))issues.push('Vision model configuration is missing.');
   try{const u=new URL(process.env.CLOUD_AGENT_PUBLIC_ORIGIN||'');if(u.protocol!=='https:'&&!(['localhost','127.0.0.1'].includes(u.hostname)&&u.protocol==='http:'))throw Error();}catch{issues.push('A valid HTTPS website origin is required for action links.');}

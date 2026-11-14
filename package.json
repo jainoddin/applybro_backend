@@ -12,6 +12,7 @@
     "prisma:migrate": "prisma migrate dev",
     "agent:setup": "node scripts/setup-cloud-agent.cjs",
     "agent:worker": "node scripts/cloud-worker.cjs",
+    "agent:check": "node scripts/agent-preflight.cjs",
     "agent:test": "node --test scripts/cloud-agent.test.cjs scripts/cloud-browser.test.cjs",
     "agent:smoke": "node scripts/cloud-agent-smoke.cjs"
   },
