@@ -1,0 +1,8 @@
+# One-shot, read-only server probe. No application API, credentials or jobs.
+FROM mcr.microsoft.com/playwright:v1.65.0-noble
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --ignore-scripts
+COPY scripts/server-browser-probe.cjs ./scripts/server-browser-probe.cjs
+USER pwuser
+CMD ["xvfb-run", "-a", "node", "scripts/server-browser-probe.cjs"]
