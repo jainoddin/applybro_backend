@@ -6,6 +6,7 @@ const {PrismaService}=require('../dist/prisma/prisma.service');const {CloudAgent
 const {approvedUrl,agentKey,seal,unseal,factsFor,terminalStates}=require('../dist/agent/agent-policy');
 const {observe,execute,plan,allowNetwork,submitLike,element,targetAt}=require('./cloud-browser.cjs');
 const {claim,heartbeat,recover}=require('./cloud-queue.cjs');
+const {reviewWindow,waitForReview}=require('./agent-pacing.cjs');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const owner=randomUUID();let stopping=false;
 process.on('SIGTERM',()=>{stopping=true;});process.on('SIGINT',()=>{stopping=true;});
@@ -19,6 +20,7 @@ async function main(){
  const update=async(id,state,reason)=>{await db.$executeRaw`UPDATE "AgentRun" SET "state"=${state},"reason"=${String(reason).slice(0,600)},"updatedAt"=NOW() WHERE "id"=${id} AND "leaseOwner"=${owner} AND "state" NOT IN ('CANCELLED','CONFIRMED')`;};
  async function run(initial){
   let context,page,observation,history=[],blocked='',lastShot=0;const privateFields=[];
+  const reviewUntil=Date.now()+reviewWindow();
   const privateImage=()=>page.screenshot({type:'png',mask:[...page.frames().map(frame=>frame.locator('input[type="password"],input[autocomplete="one-time-code"],input[name*="otp" i]')),...privateFields.filter(f=>page.frames()[f.frame]).map(f=>element(page,f.id,f.frame))]});
   const user=await db.user.findUnique({where:{id:initial.userId}}),facts=factsFor(user);
   const expectedJob=await db.jobApplication.findFirst({where:{id:initial.applicationId,userId:initial.userId}});
@@ -72,6 +74,7 @@ async function main(){
    });
    if(context.routeWebSocket)await context.routeWebSocket('**/*',socket=>socket.close());
    await page.goto(initial.url,{waitUntil:'domcontentloaded',timeout:30000});
+   await event(initial.id,'REVIEW','Review window selected: '+Math.ceil((reviewUntil-Date.now())/1000)+' seconds. Form completion and verification may take longer.');
    if(initial.reason==='Restore private browser for user action.'){
     if(!await waitForUser('Browser restored. Verify the portal session and complete the pending question.',true))return;
    }
@@ -93,11 +96,23 @@ async function main(){
     history.push({kind:action.kind,element:action.element,reason:String(action.reason||'').slice(0,200)});
     if(action.kind==='ASK_USER'){if(!await waitForUser(String(action.reason||'An employer question requires a verified answer.')))break;continue;}
     if(action.kind==='SKIP'){await update(r.id,'SKIPPED',String(action.reason||'Job not suitable.'));break;}
+    if(action.kind==='SUBMIT'&&Date.now()<reviewUntil){
+     await update(r.id,'RUNNING','Reviewing application before submission.');
+     await event(r.id,'REVIEW','Form prepared; waiting for the review window before a fresh page check.');
+     const ready=await waitForReview(reviewUntil,{sleep,active:async()=>{
+      const current=await get(r.id);if(stopping||current?.state!=='RUNNING'||current?.leaseOwner!==owner)return false;
+      const prefs=await db.$queryRaw`SELECT "enabled" FROM "AgentPreference" WHERE "userId"=${initial.userId}`;
+      return prefs[0]?.enabled===true;
+     }});
+     if(!ready)break;
+     // Re-observe and re-plan after waiting; never click a stale submit target.
+     continue;
+    }
     if(history.length>=4&&history.slice(-4).every(x=>x.kind===action.kind&&x.element===action.element)){await waitForUser('The agent repeated an action without progress. Review this page.');break;}
     try{await execute(page,observation,action,{facts,resume,resumeUploaded:r.resumeUploaded,reserve:()=>service.reserve(r.id,owner),onUpload:uploadSaved,expectedTitle:expectedJob.jobTitle});}
     catch(e){const fresh=await get(r.id);if(/Daily submission limit reached/.test(e.message)){const day=new Date(Date.now()+19800000+86400000).toISOString().slice(0,10),next=new Date(day+'T00:00:00+05:30');await db.$executeRaw`UPDATE "AgentRun" SET "state"='QUEUED',"nextAttemptAt"=${next},"reason"='Daily limit reached; resumes on the next India-calendar day.' WHERE "id"=${r.id} AND "leaseOwner"=${owner}`;break;}if(fresh.state==='SUBMITTING'){await update(r.id,'UNKNOWN','Submission control was activated but its outcome is uncertain. Do not retry.');break;}if(!await waitForUser(e.message))break;continue;}
     await db.$executeRaw`UPDATE "AgentRun" SET "steps"="steps"+1,"url"=${new URL(page.url()).origin+new URL(page.url()).pathname},"updatedAt"=NOW() WHERE "id"=${r.id}`;
-    await event(r.id,'ACTION',action.kind+' completed.');await saveSession();await sleep(700);
+    await event(r.id,'ACTION',action.kind+' completed.');await saveSession();await sleep(1200);
    }
   }catch(e){const r=await get(initial.id);if(e.retryable&&r?.state==='RUNNING'&&!r.submitReservedAt&&r.retryCount<3){const next=new Date(Date.now()+60000*2**r.retryCount);await db.$executeRaw`UPDATE "AgentRun" SET "state"='QUEUED',"retryCount"="retryCount"+1,"nextAttemptAt"=${next},"reason"='Model temporarily unavailable; bounded retry scheduled before submission.' WHERE "id"=${initial.id} AND "leaseOwner"=${owner}`;}else await update(initial.id,r?.state==='SUBMITTING'?'UNKNOWN':'FAILED','Browser or model service unavailable. No automatic retry after a possible submission.');}
   finally{clearInterval(timer);await saveSession().catch(()=>{});await context?.close().catch(()=>{});await db.$executeRaw`UPDATE "AgentRun" SET "state"=CASE WHEN "state"='RUNNING' AND "submitReservedAt" IS NULL THEN 'QUEUED' WHEN "state"='SUBMITTING' THEN 'UNKNOWN' ELSE "state" END,"leaseOwner"=NULL,"leaseUntil"=NULL,"screen"=NULL,"interactiveUntil"=NULL WHERE "id"=${initial.id} AND "leaseOwner"=${owner}`;await db.$executeRaw`DELETE FROM "AgentUserLease" WHERE "userId"=${initial.userId} AND "runId"=${initial.id} AND "owner"=${owner}`;}

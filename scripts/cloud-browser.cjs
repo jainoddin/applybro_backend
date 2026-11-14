@@ -52,7 +52,11 @@ async function execute(page,observation,raw,{facts,resume,reserve,resumeUploaded
   }else if(action.kind==='SUBMIT')throw Error('No recognized submission control.');
   await element(page,field.id,field.frame).click({timeout:10000});return;
  }
- if(action.kind==='SCROLL'){await page.mouse.wheel(0,action.direction==='up'?-650:650);return;}
+ if(action.kind==='SCROLL'){
+  const direction=action.direction==='up'?-1:1;
+  for(let step=0;step<5;step++){await page.mouse.wheel(0,direction*130);await page.waitForTimeout(120);}
+  return;
+ }
  if(action.kind==='WAIT'){await page.waitForTimeout(1200);return;}
 }
 async function plan(observation,image,facts,history,expectedJob){

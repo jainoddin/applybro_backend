@@ -69,6 +69,14 @@ confirmation messages count as submitted; uncertain outcomes are not blindly ret
 This is a pilot, not verified support for every job portal. Live employer submission
 and production hosting must be validated before advertising automatic applications.
 
+Each user's jobs run sequentially through the database user lease. The worker
+selects a 240–480 second review floor for each job, pauses before automatic submit
+if that window has not elapsed, and re-observes/re-plans before submitting. Forms
+and verification may take longer; the window never forces an incomplete submit.
+Scrolling is incremental and actions have a short settling delay. These settings
+provide readable, conservative pacing; they do not simulate a human identity or
+guarantee portal access. Configure the review range in `cloud-agent.env.example`.
+
 ## Deployment on Render
 
 - API: Docker Web Service, repository-root `Dockerfile.agent`.
