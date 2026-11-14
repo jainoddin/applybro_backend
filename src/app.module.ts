@@ -8,6 +8,7 @@ import { resolve } from "path";
 import { Module } from "@nestjs/common";
 import { OffersModule } from "./offers/offers.module";
 import { CloudAgentModule } from './agent/agent.module';
+import { HealthController } from './health.controller';
 
 @Module({
   imports: [
@@ -20,7 +21,7 @@ import { CloudAgentModule } from './agent/agent.module';
     JobsModule,
     CloudAgentModule,
   ],
-  controllers: [],
+  controllers: [HealthController],
   providers: [],
 })
 export class AppModule {}
