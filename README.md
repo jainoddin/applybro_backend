@@ -20,6 +20,27 @@ migrate the existing core application database before applying the feature SQL
 files under `prisma/`. Never upload `.env`, service-account JSON, resume files,
 screenshots containing credentials, or session secrets to GitHub.
 
+## Neon PostgreSQL
+
+The existing NestJS/Prisma driver is retained. `neon.ts` describes the Postgres-only
+configuration; Firebase authentication and R2 storage remain configured separately.
+The Neon CLI project link and credentials are private and are not committed.
+
+After linking the intended project, run `neon deploy` to pull `DATABASE_URL`
+(pooled app traffic) and `DATABASE_URL_UNPOOLED` (direct migration/backup traffic)
+into the private `.env`. Never point a hosted backend at localhost.
+
+An initial transfer into an empty Neon database can use `pg_dump --format=custom
+--no-owner --no-acl` and `pg_restore --no-owner --no-acl --exit-on-error
+--single-transaction`. Use private PostgreSQL environment variables for passwords.
+Do not overwrite a populated target. Compare all table counts after restoration,
+then test `/pricing` and `/offers/deals` through the frontend proxy.
+
+Render does not automatically receive local Neon CLI variables. Import the two
+database variables into the backend service's Environment settings and redeploy.
+Private backup and env-import files belong under the ignored `secrets/` directory.
+The `/health` endpoint checks API liveness; it does not validate database readiness.
+
 ## Hosted browser pilot
 
 Merge `cloud-agent.env.example` into the private environment, then run:
