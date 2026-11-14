@@ -10,6 +10,8 @@ const db = new PrismaClient();
 (async () => {
   const ids = [];
   try {
+    const workers = await db.$queryRaw`SELECT "id" FROM "AgentHeartbeat" WHERE "updatedAt">NOW()-INTERVAL '90 seconds'`;
+    assert.equal(workers.length, 0, 'Stop hosted workers and wait for heartbeat expiry before running database fixtures.');
     for (let i = 0; i < 2; i++) {
       const user = await db.user.create({ data: { name: 'Connection Fixture', email: `connection-${randomUUID()}@example.invalid` } });
       ids.push(user.id);
@@ -29,6 +31,10 @@ const db = new PrismaClient();
     assert.equal(task.kind, 'CONNECT');
     assert.equal(task.applicationId, null);
     await assert.rejects(service.reserve(task.id, 'connection-fixture'));
+    await db.$executeRaw`UPDATE "AgentRun" SET "state"='BLOCKED' WHERE "id"=${task.id}`;
+    assert.equal((await service.connectNaukri(uid, { consent: true })).id, task.id);
+    assert.equal((await db.$queryRaw`SELECT COUNT(*)::int AS count FROM "AgentRun" WHERE "userId"=${uid} AND "kind"='CONNECT'`)[0].count, 1);
+    await db.$executeRaw`UPDATE "AgentRun" SET "state"='RUNNING' WHERE "id"=${task.id}`;
     await service.pause(task, 'Fixture private login request');
     const status = await service.status(uid);
     assert.equal(status.runs[0].kind, 'CONNECT');
@@ -58,4 +64,4 @@ const db = new PrismaClient();
     await db.user.deleteMany({ where: { id: { in: ids } } });
     await db.$disconnect();
   }
-})().catch(error => { console.error('Connection smoke failed:', error.code || error.name); process.exitCode = 1; });
+})().catch(error => { console.error('Connection smoke failed:', error.code || error.name); if(error.name==='TypeError')console.error(error.stack.split('\n').slice(1,4).join('\n')); process.exitCode = 1; });

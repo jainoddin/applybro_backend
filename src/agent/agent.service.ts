@@ -43,11 +43,11 @@ export class CloudAgentService {
   if(!(await this.config()).connectionReady)throw new ServiceUnavailableException('Naukri connection requires an online worker, private encryption and an enabled Naukri host.');
   return this.db.$transaction(async tx=>{
    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id"=${userId} FOR UPDATE`;
-   const existing:any[]=await tx.$queryRaw`SELECT "id","state" FROM "AgentRun" WHERE "userId"=${userId} AND "kind"='CONNECT' AND "state" IN ('QUEUED','RUNNING','WAITING_USER') LIMIT 1`;
-   if(existing[0])return existing[0];
+   const existing:any[]=await tx.$queryRaw`SELECT "id","state" FROM "AgentRun" WHERE "userId"=${userId} AND "kind"='CONNECT' ORDER BY "createdAt" DESC LIMIT 1`;
+   if(existing[0]&&['QUEUED','RUNNING','WAITING_USER','BLOCKED'].includes(existing[0].state))return existing[0];
    const id=randomUUID();await tx.$executeRaw`INSERT INTO "AgentRun"("id","userId","kind","url","reason") VALUES (${id},${userId},'CONNECT','https://www.naukri.com/mnjuser/profile','Opening a private Naukri login. No job application will be submitted by this connection task.')`;
    return {id,state:'QUEUED'};
-  });
+  },{maxWait:10000,timeout:20000});
  }
  async disconnectNaukri(userId:string){
   await this.db.$transaction(async tx=>{
@@ -62,7 +62,7 @@ export class CloudAgentService {
    await tx.$executeRaw`INSERT INTO "AgentSession"("userId","encrypted","revision") VALUES (${userId},${encrypted},1) ON CONFLICT ("userId") DO UPDATE SET "encrypted"=EXCLUDED."encrypted","revision"="AgentSession"."revision"+1,"naukriCheckedAt"=NULL,"updatedAt"=NOW()`;
    await tx.$executeRaw`UPDATE "AgentRun" SET "state"='CANCELLED',"reason"='Naukri session disconnected by user.',"screen"=NULL,"interactiveUntil"=NULL,"updatedAt"=NOW() WHERE "userId"=${userId} AND "url" LIKE 'https://www.naukri.com/%' AND "state" IN ('QUEUED','RUNNING','WAITING_USER','CONNECTED','BLOCKED','FAILED') AND "submitReservedAt" IS NULL`;
    await tx.$executeRaw`DELETE FROM "AgentCommand" WHERE "runId" IN (SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "url" LIKE 'https://www.naukri.com/%')`;
-  });
+  },{maxWait:10000,timeout:20000});
   return {status:'NOT_CONNECTED'};
  }
  async settings(userId:string,body:any){
