@@ -70,7 +70,7 @@ class LoginRelay {
         .filter(el => { const text = buttonLabel(el).toLowerCase(); if (seen.has(text)) return false; seen.add(text); return true; }).slice(0, 12).map((el, i) => {
           const id = 'button-' + i; el.setAttribute('data-applybro-login', id); return { id, label: buttonLabel(el) };
         });
-      const headings = [...document.querySelectorAll('h1,h2,h3,.widgetHead,[role=heading]')].filter(visible).map(el => el.textContent.trim().toLowerCase());
+      const headings = [...document.querySelectorAll('h1,h2,h3,h4,.widgetHead,.widgetTitle,[role=heading]')].filter(visible).map(el => el.textContent.trim().toLowerCase());
       const sections = ['resume', 'key skills', 'employment', 'education', 'profile summary'].filter(x => headings.includes(x)).length;
       const privatePage = /^\/mnjuser\/(homepage|profile)\/?$/.test(location.pathname);
       const profileLink = [...document.querySelectorAll('a,button')].some(el => visible(el) && /^(view|edit) profile$/i.test(el.textContent.trim()));
@@ -149,7 +149,23 @@ class LoginRelay {
       finally { this.opening--; }
     });
   }
-  async refresh(owner) { return this.locked(owner, () => this.snapshot(this.current(owner))); }
+  async refresh(owner) {
+    return this.locked(owner, async () => {
+      const s = this.current(owner);
+      let view = await this.snapshot(s);
+      // A completed login XHR can leave the SPA on a blank/onboarding screen.
+      // Check the actual protected profile in this SAME context, once only.
+      // Never replay credentials or navigate away while an auth request is pending.
+      if (view.status === 'PAGE_UNVERIFIED' && s.lastAction && !s.pendingAuth.size && !s.profileCheckAttempted) {
+        s.profileCheckAttempted = true;
+        const response = await s.page.goto('https://www.naukri.com/mnjuser/profile', { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await s.page.waitForTimeout(1500); s.preview = null;
+        view = await this.snapshot(s);
+        if (response?.status() >= 400) return { ...view, status: 'BLOCKED', signedIn: false, message: 'Naukri rejected the protected profile check. No login or application is confirmed.' };
+      }
+      return view;
+    });
+  }
   async jobStart(owner, body, loadMaterial) {
     return this.locked(owner, async () => {
       const s = this.current(owner);
@@ -197,7 +213,7 @@ class LoginRelay {
       const button = s.buttons.find(b => b.id === body.id); if (!button) throw error('Choose a current Naukri login button.');
       const el = s.page.locator(`[data-applybro-login="${button.id}"]`);
       if ((await el.evaluate(el => (el.innerText || el.value || '').replace(/\s+/g, ' ').trim())) !== button.label) throw error('The login button changed. Refresh first.', 409);
-      s.lastAction = button.label; s.loginStartedAt = Date.now(); s.network = null;
+      s.lastAction = button.label; s.loginStartedAt = Date.now(); s.network = null; s.profileCheckAttempted = false;
       await el.click({ timeout: 5000 }); await s.page.waitForTimeout(3000);
       return this.snapshot(s);
     });

@@ -94,6 +94,20 @@ async function fixture(mode = false) {
     view = await incomplete.refresh('owner'); assert.notEqual(view.status, 'SIGNED_IN');
     console.log('PASS: incomplete authenticated homepage recognized; generic recommendations alone do not prove login');
   } finally { await incomplete.dispose(); }
+  const afterLogin = await fixture();
+  try {
+    await afterLogin.start('owner'); const session = afterLogin.current('owner');
+    session.lastAction = 'Login'; session.network = { outcome: 'RESPONSE', httpStatus: 200 };
+    await session.page.setContent('<main>Loading your account...</main>');
+    let view = await afterLogin.refresh('owner');
+    assert.equal(view.status, 'SIGNED_IN'); assert.equal(view.name, 'Fixture Candidate');
+    assert.equal(new URL(session.page.url()).pathname, '/mnjuser/profile');
+    await session.page.goto('https://www.naukri.com/nlogin/login');
+    await session.page.setContent('<main>Unverified page</main>');
+    view = await afterLogin.refresh('owner'); assert.equal(view.status, 'PAGE_UNVERIFIED');
+    assert.equal(new URL(session.page.url()).pathname, '/nlogin/login');
+    console.log('PASS: unverified post-login page checks the protected profile once, without replaying login');
+  } finally { await afterLogin.dispose(); }
   const priorTransport = process.env.NAUKRI_HTTP1_ONLY;
   process.env.NAUKRI_HTTP1_ONLY = 'true';
   const compatibility = await fixture();
