@@ -90,8 +90,14 @@ class LoginRelay {
     if (processing) view.message = timedOut ? 'Naukri has not finished its login request within 20 seconds. Sign-in is unconfirmed. Do not resend your password repeatedly; you can close this session.' : 'Naukri is processing your login. Waiting for its response; no additional input is requested yet.';
     else if (!view.signedIn && s.lastAction && !view.challenge && !/error|invalid|incorrect|wrong|unable/i.test(view.message)) view.message = view.fields.length ? 'Sign-in is not confirmed. Naukri still shows its login form. Check the portal preview and response below.' : 'The page has not provided a verifiable signed-in profile or an editable question. Check the portal preview; no sign-in is claimed.';
     if (!view.signedIn && s.network?.outcome === 'REQUEST_FAILED') view.message = `The Naukri login request failed (${s.network.errorCode || 'network error'}). ${s.network.guardReason ? 'ApplyBro network guard: ' + s.network.guardReason + '. ' : ''}No sign-in was confirmed. ` + view.message;
-    const preview = await s.page.screenshot({ type: 'jpeg', quality: 65, mask: [s.page.locator('input,textarea,select')], timeout: 5000 }).then(b => b.toString('base64')).catch(() => null);
-    return { ...view, ...(processing ? { fields: [], buttons: [] } : {}), status: view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : timedOut ? 'LOGIN_TIMEOUT' : processing ? 'LOGIN_PROCESSING' : view.fields.length ? 'INPUT_REQUIRED' : 'PAGE_UNVERIFIED', version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: false, preview, network: s.network || null, lastAction: s.lastAction || null, transport: s.transport };
+    // Do not continually rasterize a full page while its login request is pending.
+    // The free browser host has a small CPU budget. Cached previews stay labelled.
+    const status = view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : timedOut ? 'LOGIN_TIMEOUT' : processing ? 'LOGIN_PROCESSING' : view.fields.length ? 'INPUT_REQUIRED' : 'PAGE_UNVERIFIED';
+    if (!processing && (!s.preview || s.previewStatus !== status || Date.now() - s.previewAt >= 15000 || s.network?.outcome === 'REQUEST_FAILED' && s.previewNetwork !== s.network)) {
+      const preview = await s.page.screenshot({ type: 'jpeg', quality: 55, mask: [s.page.locator('input,textarea,select')], timeout: 5000 }).then(b => b.toString('base64')).catch(() => null);
+      if (preview) { s.preview = preview; s.previewAt = Date.now(); s.previewStatus = status; s.previewNetwork = s.network; }
+    }
+    return { ...view, ...(processing ? { fields: [], buttons: [] } : {}), status, version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: false, preview: s.preview || null, previewAt: s.previewAt || null, network: s.network || null, lastAction: s.lastAction || null, transport: s.transport };
   }
   async start(owner) {
     return this.locked(owner, async () => {
@@ -115,6 +121,12 @@ class LoginRelay {
           return route.continue();
         });
         const page = await context.newPage();
+        if (process.platform === 'win32' && process.env.NAUKRI_MINIMIZE_WINDOW === 'true') {
+          const controls = await context.newCDPSession(page);
+          const { windowId } = await controls.send('Browser.getWindowForTarget');
+          await controls.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
+          await controls.detach();
+        }
         const response = await page.goto(LOGIN, { waitUntil: 'domcontentloaded', timeout: 20000 });
         if (response?.status() >= 400) { await browser.close(); return { status: 'BLOCKED', httpStatus: response.status(), message: 'Naukri denied this browser. No account was connected.', fields: [], buttons: [] }; }
         await page.waitForTimeout(1500);

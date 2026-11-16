@@ -71,12 +71,17 @@ async function fixture(mode = false) {
   try {
     await pending.start('owner');
     const session = pending.current('owner'); session.lastAction = 'Login'; session.loginStartedAt = Date.now();
+    const previousPreviewAt = session.previewAt;
+    let processingCaptures = 0;
+    const originalScreenshot = session.page.screenshot.bind(session.page);
+    session.page.screenshot = (...args) => { processingCaptures++; return originalScreenshot(...args); };
     session.pendingAuth.set({}, Date.now());
     let view = await pending.refresh('owner');
     assert.equal(view.status, 'LOGIN_PROCESSING'); assert.equal(view.fields.length, 0);
     await assert.rejects(() => pending.click('owner', { version: view.version, id: 'button-0' }), e => e.status === 409);
     session.loginStartedAt = Date.now() - 25000;
     view = await pending.refresh('owner'); assert.equal(view.status, 'LOGIN_TIMEOUT'); assert.equal(view.signedIn, false);
+    assert.equal(processingCaptures, 0); assert.equal(view.previewAt, previousPreviewAt);
     console.log('PASS: pending login is not an input prompt; bounded timeout and duplicate-login rejection');
   } finally { await pending.dispose(); }
   const incomplete = await fixture();

@@ -16,6 +16,12 @@ The Next proxy forwards only the exact authenticated `job-start`, `job-status`, 
 
 ## Limits
 
+### Local browser fallback
+
+When a cloud login request fails, the same UI can use a private helper on this PC: run `server-browser-host.cjs` with `PORT=4014`, `NAUKRI_MINIMIZE_WINDOW=true` and `CLOUD_AGENT_CHROME_PATH` pointing at installed Chrome. Load the backend `.env` using Node's `--env-file=.env`, without printing it. Start the frontend with `NAUKRI_BROWSER_URL=http://127.0.0.1:4014`, `BACKEND_API_URL=https://applybro-backend.onrender.com`, and `NODE_OPTIONS=--dns-result-order=ipv4first`, using port 3012. Visit `http://localhost:3012/naukri-test` and authenticate as yourself. This opens a fresh isolated Chrome context, never imports another local account's cookies, and minimizes its window before loading Naukri. The laptop and both processes must remain running. Cloud HTTP 200/page access is not evidence of a successful login.
+
+Login status polling reuses a timestamped, masked preview while requests are pending, instead of repeatedly capturing full screenshots on the small cloud CPU. This reduces avoidable load; it is not proof that a portal transport failure or restriction is fixed.
+
 This is a bounded, in-memory, 30-minute single-job pilot. A free service sleep/restart discards it. No 24/7 or account-blocking guarantee. No model fine-tuning. External employer destinations outside the Naukri pilot remain blocked and require a separately approved adapter. OTP/CAPTCHA, unknown consents, unsupported controls and login expiry require attended review; this dialog cannot complete a CAPTCHA. The receipt is displayed in the pilot and is not written into dashboard application totals. Do not infer submission from a tab opening, HTTP 200, upload success or a screenshot fixture.
 
 ## Verification
