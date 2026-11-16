@@ -1,4 +1,4 @@
-# One-shot, read-only server probe. No application API, credentials or jobs.
+# Owner-authenticated login plus one-job pilot; anonymous probe stays read-only.
 FROM mcr.microsoft.com/playwright:v1.65.0-noble
 WORKDIR /app
 COPY package*.json ./
@@ -6,6 +6,9 @@ RUN npm ci --ignore-scripts
 COPY scripts/server-browser-probe.cjs ./scripts/server-browser-probe.cjs
 COPY scripts/server-browser-host.cjs ./scripts/server-browser-host.cjs
 COPY scripts/naukri-login-relay.cjs ./scripts/naukri-login-relay.cjs
+COPY scripts/naukri-workflow.cjs scripts/naukri-flow.cjs scripts/cloud-browser.cjs ./scripts/
+COPY src/agent/agent-policy.ts ./src/agent/agent-policy.ts
+RUN npx tsc src/agent/agent-policy.ts --outDir dist/agent --target ES2022 --module commonjs --skipLibCheck
 USER pwuser
 EXPOSE 10000
 CMD ["node", "scripts/server-browser-host.cjs"]

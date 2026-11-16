@@ -44,7 +44,7 @@ async function syncResume(page, resume, { timeout = 20000 } = {}) {
         for (const node of nodes) {
           const text = node?.textContent || '';
           const element = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
-          if (element && element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden' && text.length < 700 && /resume (?:has been |was )?(?:uploaded|updated|saved) successfully|successfully (?:uploaded|updated|saved) (?:your )?resume/i.test(text)) window.__applybroResumeReceipt = true;
+          if (element && element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden' && text.length < 700 && /resume (?:has been |was )?(?:successfully (?:uploaded|updated|saved)|(?:uploaded|updated|saved) successfully)|successfully (?:uploaded|updated|saved) (?:your )?resume/i.test(text)) window.__applybroResumeReceipt = true;
         }
       }
     });

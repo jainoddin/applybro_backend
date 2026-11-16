@@ -30,7 +30,7 @@ export class CloudAgentService {
   const notices:any[]=await this.db.$queryRaw`SELECT DISTINCT ON (n."runId") n."runId",n."state",n."expiresAt" FROM "AgentNotice" n JOIN "AgentRun" r ON r."id"=n."runId" WHERE r."userId"=${userId} ORDER BY n."runId",n."createdAt" DESC`;
   const matches=await this.jobs.getMatchedJobs(userId);
   const user=await this.db.user.findUnique({where:{id:userId},select:{minMatchScore:true}});
-  const candidateJobs=matches.jobs.filter(job=>job.status!=='APPLIED'&&job.matchAssessed&&job.matchScore>=(user?.minMatchScore??70)&&approvedUrl(job.applicationUrl)).slice(0,50).map(job=>({id:job.id,title:job.title,company:job.company,score:job.matchScore}));
+  const candidateJobs=matches.jobs.filter((job):job is typeof job & {matchAssessed:true;applicationUrl:string}=>'matchAssessed' in job&&job.matchAssessed===true&&'applicationUrl' in job&&typeof job.applicationUrl==='string').filter(job=>job.status!=='APPLIED'&&job.matchScore>=(user?.minMatchScore??70)&&approvedUrl(job.applicationUrl)).slice(0,50).map(job=>({id:job.id,title:job.title,company:job.company,score:job.matchScore}));
   const events:any[]=await this.db.$queryRaw`SELECT e."runId",e."kind",e."message",e."createdAt" FROM "AgentEvent" e JOIN "AgentRun" r ON r."id"=e."runId" WHERE r."userId"=${userId} ORDER BY e."createdAt" DESC LIMIT 100`;
   const sessions:any[]=await this.db.$queryRaw`SELECT "naukriCheckedAt" FROM "AgentSession" WHERE "userId"=${userId}`;
   const connection:any[]=await this.db.$queryRaw`SELECT "id","state","reason" FROM "AgentRun" WHERE "userId"=${userId} AND "kind"='CONNECT' ORDER BY "createdAt" DESC LIMIT 1`;

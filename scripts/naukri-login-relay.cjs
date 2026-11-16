@@ -8,7 +8,8 @@ const publicAddress = value => {
   return isIP(value) === 6 && /^[23][0-9a-f]{3}:/i.test(value) && !/^2001:(db8|0:|10:|20:)/i.test(value);
 };
 const LOGIN = 'https://www.naukri.com/nlogin/login';
-const allowedPage = url => { try { const u = new URL(url); return u.protocol === 'https:' && ['www.naukri.com', 'naukri.com'].includes(u.hostname) && /^\/(nlogin(?:\/|$)|mnjuser\/(?:homepage|profile)(?:\/|$))/.test(u.pathname); } catch { return false; } };
+const allowedPage = url => { try { const u = new URL(url); return u.protocol === 'https:' && !u.username && !u.password && (!u.port || u.port === '443') && ['www.naukri.com', 'naukri.com'].includes(u.hostname) && /^\/(nlogin(?:\/|$)|mnjuser\/(?:homepage|profile)(?:\/|$))/.test(u.pathname); } catch { return false; } };
+const { OneJob, workflowPage } = require('./naukri-workflow.cjs');
 const error = (message, status = 400) => Object.assign(new Error(message), { status });
 const authRequest = request => { try { const u = new URL(request.url()); return request.method() === 'POST' && /(^|\.)naukri\.com$/i.test(u.hostname) && /login|auth|otp|verify|session/i.test(u.pathname); } catch { return false; } };
 let displayProcess, displayReady;
@@ -35,12 +36,12 @@ class LoginRelay {
   }
   async close(owner) {
     const s = this.sessions.get(owner); if (!s) return { closed: true };
-    s.closing = true; s.pendingAuth?.clear(); this.sessions.delete(owner); clearTimeout(s.timer); await s.browser.close().catch(() => {}); return { closed: true };
+    s.closing = true; s.workflow?.stop(); s.pendingAuth?.clear(); this.sessions.delete(owner); clearTimeout(s.timer); await s.browser.close().catch(() => {}); return { closed: true };
   }
   current(owner) {
     const s = this.sessions.get(owner);
     if (!s || s.expiresAt <= Date.now()) throw error('Private login expired or the server restarted. Connect again.', 410);
-    if (!allowedPage(s.page.url())) throw error('The browser is not on an allowed Naukri login/profile page.');
+    if (!(s.workflow ? workflowPage(s.page.url()) : allowedPage(s.page.url()))) throw error('The browser is not on a supported Naukri page.');
     return s;
   }
   async snapshot(s) {
@@ -74,14 +75,16 @@ class LoginRelay {
       const privatePage = /^\/mnjuser\/(homepage|profile)\/?$/.test(location.pathname);
       const profileLink = [...document.querySelectorAll('a,button')].some(el => visible(el) && /^(view|edit) profile$/i.test(el.textContent.trim()));
       const visiblePassword = [...document.querySelectorAll('input[type=password]')].some(visible);
-      const signedIn = privatePage && !visiblePassword && (sections >= 2 || profileLink && /profile performance/i.test(document.body.innerText));
+      const completeProfile = [...document.querySelectorAll('a,button')].some(el => visible(el) && /^complete profile$/i.test(el.textContent.trim()));
+      const accountNavigation = [...document.querySelectorAll('a,button')].some(el => visible(el) && /^my home$/i.test(el.textContent.trim()));
+      const signedIn = privatePage && !visiblePassword && (sections >= 2 || profileLink && /profile performance/i.test(document.body.innerText) || completeProfile && accountNavigation && /recommended jobs|profile performance/i.test(document.body.innerText));
       const loading = !signedIn && [...document.querySelectorAll('[role=progressbar],[aria-busy=true],.loader,.loading,[class*=spinner i]')].some(visible);
       const name = signedIn ? [...document.querySelectorAll('[data-field=name],.user-name,.userName,.name,h1')].find(visible)?.textContent?.trim().slice(0, 120) || null : null;
       const challenge = [...document.querySelectorAll('iframe[src*=captcha],[id*=captcha i]')].some(visible);
       const messages = [...document.querySelectorAll('[role=alert],[class*=error i],.err,.err-msg,.errMsg,.formTextErr')].filter(visible).filter(el => el.innerText && el.innerText.length < 400).map(el => el.innerText.trim()).filter(Boolean).filter((x,i,all) => all.indexOf(x) === i).join(' ').slice(0, 400);
       return { fields, buttons, signedIn, name, challenge, loading, message: signedIn ? 'Signed-in Naukri profile observed.' : messages || 'Enter the fields requested by Naukri, then choose its login or verification button.' };
     });
-    s.version++; s.fields = view.fields; s.buttons = view.buttons;
+    s.signedIn = view.signedIn; s.version++; s.fields = view.fields; s.buttons = view.buttons;
     const processing = !view.signedIn && !!s.lastAction && (!!s.pendingAuth?.size || view.loading);
     const timedOut = processing && Date.now() - s.loginStartedAt > 20000;
     if (processing) view.message = timedOut ? 'Naukri has not finished its login request within 20 seconds. Sign-in is unconfirmed. Do not resend your password repeatedly; you can close this session.' : 'Naukri is processing your login. Waiting for its response; no additional input is requested yet.';
@@ -108,7 +111,7 @@ class LoginRelay {
           const abort = reason => { if (s && authRequest(r)) s.network = { outcome: 'REQUEST_FAILED', guardReason: reason }; return route.abort(); };
           if (u.protocol !== 'https:' || u.port && u.port !== '443' || u.username || u.password || /^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[)/i.test(u.hostname)) return abort('INVALID_PUBLIC_HTTPS_DESTINATION');
           try { const addresses = await dns.lookup(u.hostname, { all: true }); if (!addresses.length || !addresses.every(x => publicAddress(x.address))) return abort('NON_PUBLIC_ADDRESS'); } catch { return abort('DNS_LOOKUP_FAILED'); }
-          if (r.isNavigationRequest() && r.frame().parentFrame() === null && !allowedPage(r.url())) return abort('UNSUPPORTED_LOGIN_NAVIGATION');
+          if (r.isNavigationRequest() && r.frame().parentFrame() === null && !(s?.workflow ? workflowPage(r.url()) : allowedPage(r.url()))) return abort('UNSUPPORTED_LOGIN_NAVIGATION');
           return route.continue();
         });
         const page = await context.newPage();
@@ -135,6 +138,25 @@ class LoginRelay {
     });
   }
   async refresh(owner) { return this.locked(owner, () => this.snapshot(this.current(owner))); }
+  async jobStart(owner, body, loadMaterial) {
+    return this.locked(owner, async () => {
+      const s = this.current(owner);
+      if (s.workflow) throw error('This session already has a job attempt. Check its result; do not retry an uncertain submission.', 409);
+      const current = await this.snapshot(s);
+      if (!current.signedIn) throw error('Confirm your signed-in Naukri profile first.', 409);
+      try { OneJob.validate(body); } catch (e) { throw error(e.message); }
+      const material = await loadMaterial();
+      try { s.workflow = new OneJob(s.page, material, body); } catch (e) { throw error(e.message, 409); }
+      // A login plus a single application can outlive the five-minute login pilot.
+      clearTimeout(s.timer); s.expiresAt = Date.now() + 30 * 60 * 1000;
+      s.timer = setTimeout(() => { void this.close(owner); }, 30 * 60 * 1000); s.timer.unref();
+      s.workflow.start();
+      return s.workflow.status();
+    });
+  }
+  async jobStatus(owner) { const s = this.current(owner); if (!s.workflow) throw error('No job started.'); return s.workflow.status(); }
+  async jobStop(owner) { const s = this.current(owner); if (!s.workflow) throw error('No job started.'); s.workflow.stop(); return s.workflow.status(); }
+  async jobAnswer(owner, body) { return this.locked(owner, async () => { const s = this.current(owner); if (!s.workflow) throw error('No job started.'); return s.workflow.answer(body); }); }
   async fill(owner, body) {
     return this.locked(owner, async () => {
       const s = this.current(owner);

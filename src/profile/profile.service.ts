@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { GeminiService } from './gemini.service';
 import { ApplyMode } from '@prisma/client';
 import { decodeResume, savePrivateResume } from './private-resume';
+import { factsFor } from '../agent/agent-policy';
 const PORTALS=['Company Career Portals','LinkedIn','Google for Jobs','Naukri.com','Indeed','Wellfound / AngelList','Glassdoor','ZipRecruiter'];
 const LEGACY_PORTALS:Record<string,string>={LINKEDIN:'LinkedIn',NAUKRI:'Naukri.com',INDEED:'Indeed',ATS_DIRECT:'Company Career Portals'};
 
@@ -12,6 +13,17 @@ export class ProfileService {
     private readonly prisma: PrismaService,
     private readonly geminiService: GeminiService,
   ) {}
+
+  async browserMaterial(userId: string) {
+    // Raw saved facts only: UI defaults such as Immediate Joiner are not answers.
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User profile not found');
+    const files: any[] = await this.prisma.$queryRaw`SELECT "fileName","fileBytes","mimeType" FROM "Resume" WHERE "userId"=${userId} AND "fileBytes" IS NOT NULL ORDER BY "isDefault" DESC,"createdAt" DESC LIMIT 1`;
+    if (!files[0]) throw new BadRequestException('Upload your resume in Get Started first.');
+    const file = files[0];
+    if (file.fileBytes.length > 5 * 1024 * 1024) throw new BadRequestException('Resume exceeds 5 MB.');
+    return { facts: factsFor(user), resume: { fileName: file.fileName, mimeType: file.mimeType, fileBase64: Buffer.from(file.fileBytes).toString('base64') } };
+  }
 
   async getProfile(userId: string) {
     const user = await this.prisma.user.findUnique({

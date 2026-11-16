@@ -10,7 +10,8 @@ async function observe(page){
   const verifiedCaptcha=[...document.querySelectorAll('textarea[name="g-recaptcha-response"],textarea[name="h-captcha-response"],input[name="cf-turnstile-response"]')].some(el=>!!el.value);
   const challenge=[...document.querySelectorAll('input[autocomplete="one-time-code"],input[type="password"],input[name*="otp" i]')].some(visible)||!verifiedCaptcha&&[...document.querySelectorAll('iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="challenges.cloudflare.com"],[id*="captcha" i]')].some(visible);
   const confirmations=[...document.querySelectorAll('#application_confirmation,.application-confirmation,[data-qa="application-confirmation"],.apply-message,.postApply-message,.applySuccess,.applied-success,[role="alert"],main h1,main h2')].filter(visible).map(x=>x.innerText||'').find(x=>/(application (has been |was )?(submitted|received)|thank you for (applying|your application)|successfully applied)/i.test(x))||'';
-  return {url:location.href,title:document.title,text:(document.querySelector('main')||document.body).innerText.slice(0,24000),fields,challenge,confirmation:confirmations.slice(0,400)};
+  const naukriReceipt = location.origin === 'https://www.naukri.com' && /^\/myapply\/saveApply\/?$/.test(location.pathname) ? [...document.querySelectorAll('h1,h2,h3,.apply-message,.postApply-message,.applySuccess,.applied-success,[role=alert],.apply-message-container')].filter(visible).map(el=>el.innerText||'').find(text=>/^Applied to\s+["“]?\S/i.test(text.trim())&&text.length<500)||'' : '';
+  return {url:location.href,title:document.title,text:(document.querySelector('main')||document.body).innerText.slice(0,24000),fields,challenge,confirmation:(confirmations||naukriReceipt).slice(0,400)};
  },{offset,frameIndex});}catch{continue;}offset+=snapshot.fields.length;snapshots.push(snapshot);}
  const main=snapshots[0];if(!main)throw Error('No readable browser page.');return {...main,text:snapshots.map(x=>x.text).join('\n').slice(0,24000),fields:snapshots.flatMap(x=>x.fields).slice(0,500),challenge:snapshots.some(x=>x.challenge),confirmation:snapshots.find(x=>x.confirmation)?.confirmation||''};
 }
@@ -26,10 +27,10 @@ async function targetAt(page,x,y){
  return target.evaluate(({x,y})=>{const el=document.elementFromPoint(x,y)?.closest('button,a,[role="button"],input[type="submit"]');return el?{label:el.innerText||el.getAttribute('aria-label')||el.value||'',tag:el.tagName,href:el.href||'',verification:!!el.closest('form,[role=dialog]')?.querySelector('input[type=password],input[autocomplete=one-time-code],input[name*=otp i]')}:null;},point);
 }
 function submitLike(field){return /\b(submit|send application|finish application|apply( now)?)\b/i.test(field.label);}
-async function execute(page,observation,raw,{facts,resume,reserve,resumeUploaded=false,onUpload=async()=>{},expectedTitle=''}){
+async function execute(page,observation,raw,{facts,resume,reserve,resumeUploaded=false,onUpload=async()=>{},expectedTitle='',expectedCompany=''}){
  const action=validateAction(raw),previous=observation.fields.find(x=>x.id===action.element);
  observation=await observe(page);const field=observation.fields.find(x=>x.id===action.element);
- if(previous&&(!field||previous.label!==field.label||previous.type!==field.type||previous.frame!==field.frame))throw Error('The page changed before the action. Review the current form.');
+ if(previous&&(!field||previous.label!==field.label||previous.type!==field.type||previous.frame!==field.frame||previous.tag!==field.tag||previous.href!==field.href))throw Error('The page changed before the action. Review the current form.');
  if(['FILL','UPLOAD','CLICK','SUBMIT'].includes(action.kind)&&!field)throw Error('The page changed; target is no longer available.');
  if(action.kind==='FILL'){
   const value=factValue(action.fact,field,facts);if(field.tag==='SELECT'){const option=field.options?.find(x=>x.text.trim().toLowerCase()===value.trim().toLowerCase()||x.value===value);if(!option)throw Error('This dropdown needs a user answer.');await element(page,field.id,field.frame).selectOption(option.value);}else await element(page,field.id,field.frame).fill(value);return;
@@ -50,6 +51,12 @@ async function execute(page,observation,raw,{facts,resume,reserve,resumeUploaded
    if(action.kind!=='SUBMIT')throw Error('This button may submit an application; explicit submission action required.');
    if(!resumeUploaded)throw Error('The stored resume has not been uploaded in this application. User review required.');
    const words=expectedTitle.toLowerCase().match(/[a-z]{3,}/g)||[];if(!words.length||words.filter(w=>observation.text.toLowerCase().includes(w)).length/words.length<0.7)throw Error('The current application job identity needs user review.');
+   if(expectedCompany){
+    const identity=await page.evaluate(({title,company})=>{const visible=el=>!!el.getClientRects().length&&getComputedStyle(el).visibility!=='hidden';const normalize=value=>value.toLowerCase().replace(/\s+/g,' ').trim();const titleWords=normalize(title).match(/[a-z]{3,}/g)||[];const heading=[...document.querySelectorAll('h1')].filter(visible).some(el=>titleWords.length&&titleWords.filter(w=>normalize(el.textContent).includes(w)).length/titleWords.length>=0.7);const employer=[...document.querySelectorAll('h2,a[href],[class*=comp-name],[class*=company-name]')].filter(visible).some(el=>el.textContent.length<240&&normalize(el.textContent).includes(normalize(company)));return heading&&employer;},{title:expectedTitle,company:expectedCompany});
+    if(!identity)throw Error('The current job and company identity need user review.');
+   }
+   if(observation.challenge)throw Error('Verification requires your action.');
+   const invalid=await page.locator('input:invalid,textarea:invalid,select:invalid').count();if(invalid)throw Error('Some required fields or answer formats are invalid.');
    if(observation.fields.some(x=>x.required&&!x.filled&&['INPUT','TEXTAREA','SELECT'].includes(x.tag)))throw Error('Required employer questions are unanswered.');
    await reserve();
   }else if(action.kind==='SUBMIT')throw Error('No recognized submission control.');

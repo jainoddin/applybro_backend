@@ -14,6 +14,12 @@ export class ProfileController {
     return this.profileService.getProfile(request.authUser.id);
   }
 
+  @Get('browser-material')
+  async browserMaterial(@Req() request: any, @Res({ passthrough: true }) response: Response) {
+    response.setHeader('Cache-Control', 'no-store');
+    return this.profileService.browserMaterial(request.authUser.id);
+  }
+
   @Post('setup')
   async saveSetup(
     @Req() request: any,

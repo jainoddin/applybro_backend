@@ -79,6 +79,16 @@ async function fixture(mode = false) {
     view = await pending.refresh('owner'); assert.equal(view.status, 'LOGIN_TIMEOUT'); assert.equal(view.signedIn, false);
     console.log('PASS: pending login is not an input prompt; bounded timeout and duplicate-login rejection');
   } finally { await pending.dispose(); }
+  const incomplete = await fixture();
+  try {
+    await incomplete.start('owner'); const session = incomplete.current('owner');
+    await session.page.goto('https://www.naukri.com/mnjuser/homepage');
+    await session.page.setContent('<main><h1 class="user-name">applybro</h1><button>Complete profile</button><a href="/mnjuser/homepage">My home</a><h2>Recommended jobs</h2></main>');
+    let view = await incomplete.refresh('owner'); assert.equal(view.status, 'SIGNED_IN'); assert.equal(view.name, 'applybro');
+    await session.page.setContent('<main><button>Complete profile</button><h2>Recommended jobs</h2></main>');
+    view = await incomplete.refresh('owner'); assert.notEqual(view.status, 'SIGNED_IN');
+    console.log('PASS: incomplete authenticated homepage recognized; generic recommendations alone do not prove login');
+  } finally { await incomplete.dispose(); }
   const priorTransport = process.env.NAUKRI_HTTP1_ONLY;
   process.env.NAUKRI_HTTP1_ONLY = 'true';
   const compatibility = await fixture();

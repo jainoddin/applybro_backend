@@ -8,13 +8,18 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  if (req.method === 'POST' && /^\/login\/(start|refresh|fill|click|close)$/.test(req.url)) {
+  if (req.method === 'POST' && /^\/login\/(start|refresh|fill|click|close|job-start|job-status|job-answer|job-stop)$/.test(req.url)) {
     try {
       const owner = await authenticate(req);
       let text = ''; for await (const chunk of req) { text += chunk; if (Buffer.byteLength(text) > 50000) throw Object.assign(new Error('Request too large.'), { status: 413 }); }
       let body; try { body = JSON.parse(text || '{}'); } catch { throw Object.assign(new Error('Invalid request.'), { status: 400 }); }
       const action = req.url.split('/').pop();
-      const data = action === 'start' ? await relay.start(owner) : action === 'refresh' ? await relay.refresh(owner) : action === 'fill' ? await relay.fill(owner, body) : action === 'click' ? await relay.click(owner, body) : await relay.close(owner);
+      const loadMaterial = async () => {
+        const response = await fetch('https://applybro-backend.onrender.com/profile/browser-material', { headers: { Authorization: req.headers.authorization }, signal: AbortSignal.timeout(20000), redirect: 'error' });
+        if (!response.ok) throw Object.assign(new Error('Your saved profile/resume could not be loaded. Check Get Started.'), { status: 409 });
+        return response.json();
+      };
+      const data = action === 'job-start' ? await relay.jobStart(owner, body, loadMaterial) : action === 'job-status' ? await relay.jobStatus(owner) : action === 'job-answer' ? await relay.jobAnswer(owner, body) : action === 'job-stop' ? await relay.jobStop(owner) : action === 'start' ? await relay.start(owner) : action === 'refresh' ? await relay.refresh(owner) : action === 'fill' ? await relay.fill(owner, body) : action === 'click' ? await relay.click(owner, body) : await relay.close(owner);
       return res.end(JSON.stringify(data));
     } catch (e) { res.writeHead(e.status || 503); return res.end(JSON.stringify({ message: e.status ? e.message : 'Private login action could not complete. Refresh the current Naukri fields.' })); }
   }
@@ -26,7 +31,9 @@ const server = http.createServer(async (req, res) => {
 server.listen(Number(process.env.PORT || 10000), '0.0.0.0', () => {
   console.log('Probe health server listening; starting one read-only browser access test.');
   // A bounded child isolates Xvfb/browser startup from HTTP readiness.
-  const child = spawn('timeout', ['--signal=TERM', '--kill-after=5s', '45s', 'xvfb-run', '-a', 'node', 'scripts/server-browser-probe.cjs'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = process.platform === 'win32'
+    ? spawn(process.execPath, ['scripts/server-browser-probe.cjs'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn('timeout', ['--signal=TERM', '--kill-after=5s', '45s', 'xvfb-run', '-a', 'node', 'scripts/server-browser-probe.cjs'], { stdio: ['ignore', 'pipe', 'pipe'] });
   let buffer = '', reported = false;
   child.stdout.on('data', chunk => {
     buffer += chunk.toString();
