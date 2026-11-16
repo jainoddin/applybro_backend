@@ -4,6 +4,8 @@ async function openProfile(page) {
   if (response && response.status() >= 400) {
     throw Object.assign(Error(`Naukri rejected the background browser (HTTP ${response.status()}). No application was submitted; this is not an OTP/login prompt.`), { portalBlocked: true });
   }
+  // The profile is a SPA: DOMContentLoaded precedes its resume widget.
+  await page.waitForFunction(() => document.querySelector('#attachCV,input[type=file][aria-label*="resume" i],input[type=password]'), null, { timeout: 12000 }).catch(() => {});
 }
 function isNaukriJob(value) {
   try { const u = new URL(value); return u.origin === 'https://www.naukri.com' && u.pathname.startsWith('/job-listings-'); }
@@ -15,7 +17,7 @@ async function profileState(page) {
   return page.evaluate(() => {
     const visible = el => !!el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
     const login = [...document.querySelectorAll('input[type=password],input[autocomplete=one-time-code]')].some(visible);
-    const headings = [...document.querySelectorAll('h1,h2,h3,h4,.widgetHead,.widgetTitle,[role=heading]')]
+    const headings = [...document.querySelectorAll('h1,h2,h3,h4,.widgetHead,.widgetTitle,.text,[role=heading]')]
       .filter(visible).map(el => el.innerText.trim().toLowerCase());
     const sections = ['resume', 'resume headline', 'key skills', 'employment', 'education', 'profile summary'];
     const count = sections.filter(name => headings.some(h => h === name)).length;

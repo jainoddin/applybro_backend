@@ -6,9 +6,10 @@ RUN npm ci --ignore-scripts
 COPY scripts/server-browser-probe.cjs ./scripts/server-browser-probe.cjs
 COPY scripts/server-browser-host.cjs ./scripts/server-browser-host.cjs
 COPY scripts/naukri-login-relay.cjs ./scripts/naukri-login-relay.cjs
-COPY scripts/naukri-workflow.cjs scripts/naukri-flow.cjs scripts/cloud-browser.cjs ./scripts/
+COPY scripts/naukri-workflow.cjs scripts/naukri-flow.cjs scripts/cloud-browser.cjs scripts/naukri-discovery.cjs ./scripts/
 COPY src/agent/agent-policy.ts ./src/agent/agent-policy.ts
-RUN npx tsc src/agent/agent-policy.ts --outDir dist/agent --target ES2022 --module commonjs --skipLibCheck
+COPY src/jobs/skill-match.ts ./src/jobs/skill-match.ts
+RUN npx tsc src/agent/agent-policy.ts src/jobs/skill-match.ts --outDir dist --rootDir src --target ES2022 --module commonjs --skipLibCheck
 USER pwuser
 EXPOSE 10000
 CMD ["node", "scripts/server-browser-host.cjs"]

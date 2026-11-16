@@ -54,6 +54,17 @@ test('navigation never grants arbitrary employer or local URL access', () => {
   for (const url of ['http://www.naukri.com/job-listings-x', 'https://www.naukri.com.evil.example/job-listings-x', 'https://user:secret@www.naukri.com/job-listings-x', 'https://www.naukri.com:444/job-listings-x', 'http://localhost/']) assert.equal(workflowPage(url), false);
   assert.equal(workflowPage(job.url), true); assert.throws(() => OneJob.validate({ ...job, consent: false }));
 });
+test('automatic mode uploads first, selects a live candidate and applies without a supplied URL', async () => {
+  const { browser, page } = await fixture(); let uploaded = false, selected = false;
+  try {
+    const task = new OneJob(page, material, { auto: true, consent: true }, {
+      openProfile: async () => {}, syncResume: async () => { uploaded = true; },
+      discover: async () => { assert(uploaded); selected = true; return { url: job.url, title: job.title, company: job.company }; },
+      plan: async observation => { const email = observation.fields.find(f => f.type === 'email'); return email.filled ? { kind: 'SUBMIT', element: observation.fields.find(f => f.tag === 'BUTTON').id } : { kind: 'FILL', element: email.id, fact: 'email' }; }
+    });
+    task.start(); await task.task; assert(selected); assert.equal(task.state, 'CONFIRMED'); assert.equal(await page.evaluate(() => window.sent), 1);
+  } finally { await browser.close(); }
+});
 test('an attempted submission without receipt becomes unknown and is never replayed', async () => {
   const { browser, page } = await fixture();
   try {

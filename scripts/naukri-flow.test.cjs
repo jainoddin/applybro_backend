@@ -27,6 +27,10 @@ test('a profile URL alone does not prove sign-in and visible password blocks it'
   try { assert.equal((await profileState(page)).signedIn, false); }
   finally { await browser.close(); }
 });
+test('current incomplete profile uses quick-link span labels and an attached resume widget', async () => {
+  const { browser, page } = await fixture('<span class="text">Resume</span><span class="text">Education</span><span class="widgetTitle">Key skills</span><input id="attachCV" aria-label="Upload resume" type="file">');
+  try { assert.equal((await profileState(page)).signedIn, true); } finally { await browser.close(); }
+});
 test('uploads the stored resume and requires a fresh visible portal receipt and filename', async () => {
   const { browser, page } = await fixture(profile + '<script>document.querySelector("input").addEventListener("change",e=>{document.querySelector("#filename").textContent=e.target.files[0].name; const el=document.createElement("div");el.textContent="Resume uploaded successfully";document.body.append(el);});</script>');
   try {

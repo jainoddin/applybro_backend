@@ -1,29 +1,32 @@
 // One owner, one existing private browser, one application attempt. No stealth.
 const { randomUUID } = require('node:crypto');
 const { isNaukriJob, openProfile, syncResume } = require('./naukri-flow.cjs');
+const { discover, searchPage } = require('./naukri-discovery.cjs');
 function workflowPage(value) {
-  try { const u = new URL(value); return u.origin === 'https://www.naukri.com' && !u.username && !u.password && (/^\/mnjuser\/(homepage|profile)\/?$/.test(u.pathname) || /^\/nlogin(?:\/|$)/.test(u.pathname) || /^\/job-listings-[^/]+$/.test(u.pathname) || /^\/myapply\/saveApply\/?$/.test(u.pathname)); }
+  try { const u = new URL(value); return u.origin === 'https://www.naukri.com' && !u.username && !u.password && (/^\/mnjuser\/(homepage|profile)\/?$/.test(u.pathname) || /^\/nlogin(?:\/|$)/.test(u.pathname) || /^\/job-listings-[^/]+$/.test(u.pathname) || /^\/myapply\/saveApply\/?$/.test(u.pathname) || searchPage(value)); }
   catch { return false; }
 }
 const terminal = new Set(['CONFIRMED', 'UNKNOWN', 'STOPPED', 'FAILED', 'SKIPPED']);
 class OneJob {
   static validate(job) {
+    if (job?.consent === true && job.auto === true) return;
     if (job?.consent !== true || !isNaukriJob(job.url) || !workflowPage(job.url) || ![job.title, job.company].every(x => typeof x === 'string' && x.trim().length >= 2 && x.length < 180)) throw Error('Choose one Naukri job URL, its title and company, and authorize this application.');
   }
   constructor(page, material, job, dependencies = {}) {
     OneJob.validate(job);
-    this.id = randomUUID(); this.page = page; this.job = { url: job.url, title: job.title.trim(), company: job.company.trim() };
+    this.id = randomUUID(); this.page = page; this.job = job.auto === true ? { auto: true } : { url: job.url, title: job.title.trim(), company: job.company.trim() };
+    this.preferences = material.preferences || {};
     this.facts = material.facts; this.resume = { ...material.resume, fileBytes: Buffer.from(material.resume.fileBase64, 'base64') }; delete this.resume.fileBase64;
     if (!this.resume.fileBytes.length || !this.facts?.fullName || !this.facts?.email) throw Error('Save your name, email and actual resume before applying.');
     const browser = require('./cloud-browser.cjs');
-    this.ops = { observe: browser.observe, execute: browser.execute, plan: browser.plan, openProfile, syncResume, ...dependencies };
+    this.ops = { observe: browser.observe, execute: browser.execute, plan: browser.plan, openProfile, syncResume, discover, ...dependencies };
     if (!dependencies.plan && (!process.env.CLOUD_AGENT_MODEL || !(process.env.CLOUD_AGENT_API_KEY || process.env.GEMINI_API_KEYS))) throw Error('Configure CLOUD_AGENT_MODEL and CLOUD_AGENT_API_KEY on the private browser service before starting.');
     this.state = 'READY'; this.events = []; this.history = []; this.version = 0; this.submitted = false; this.uploaded = false; this.steps = 0;
-    this.event('Ready to review ' + this.job.title + ' at ' + this.job.company + '.');
+    this.event(this.job.auto ? 'Ready to upload the saved resume and find one suitable live job.' : 'Ready to review ' + this.job.title + ' at ' + this.job.company + '.');
   }
   event(message) { this.message = message; this.events.push({ at: new Date().toISOString(), message }); this.events = this.events.slice(-50); }
   active() { if (terminal.has(this.state)) throw Error('Application stopped.'); }
-  start() { if (this.state !== 'READY') return; this.state = 'RUNNING'; this.task = this.run().catch(() => { if (!terminal.has(this.state)) { this.state = this.submitted ? 'UNKNOWN' : 'FAILED'; this.event(this.submitted ? 'Submission result is uncertain. Do not retry automatically.' : 'Browser action failed. Inspect the current page; no submission is claimed.'); } }); }
+  start() { if (this.state !== 'READY') return; this.state = 'RUNNING'; this.task = this.run().catch(async e => { if (!terminal.has(this.state)) { this.state = this.submitted ? 'UNKNOWN' : 'FAILED'; const message = /^(Naukri|Sign in|Save target|The task private resume)/.test(String(e.message)) ? String(e.message).slice(0,300) : 'Browser action failed. Inspect the current page; no submission is claimed.'; this.event(this.submitted ? 'Submission result is uncertain. Do not retry automatically.' : message); await this.capture().catch(()=>{}); } }); }
   stop() { if (!terminal.has(this.state)) { this.state = this.submitted ? 'UNKNOWN' : 'STOPPED'; this.event(this.submitted ? 'Stopped after a submission attempt. Verify the portal result before retrying.' : 'Stopped by you. No further controls will be clicked.'); } }
   async capture() {
     this.observation = await this.ops.observe(this.page); this.version++;
@@ -33,14 +36,36 @@ class OneJob {
   status() { return { id: this.id, status: this.state, message: this.message, job: this.job, steps: this.steps, version: this.version, resume: this.resume.fileName, resumeUploaded: this.uploaded, confirmation: this.confirmation || null, preview: this.preview || null, events: this.events, questions: this.state === 'WAITING_USER' ? (this.observation?.fields || []).filter(f => ['INPUT','TEXTAREA','SELECT'].includes(f.tag) && !['file','password','hidden','checkbox','radio'].includes(f.type) && !/otp|verification|one.time|captcha/i.test(f.label)).map(({ id, label, type, tag, options, required, filled }) => ({ id, label, type, tag, options, required, filled })) : [] }; }
   async pause(reason) { this.state = 'WAITING_USER'; this.event(reason); await this.capture(); }
   async run() {
+    // Install the expanded, guarded navigation policy in the existing context.
+    // This also supports a locally hot-reloaded verifier without replacing login.
+    if (!this.routeInstalled) {
+      const { allowNetwork } = require('./cloud-browser.cjs');
+      await this.page.context().route('**/*', async route => {
+        const request = route.request();
+        if (!await allowNetwork(request.url())) return route.abort();
+        if (request.isNavigationRequest() && request.frame().parentFrame() === null && !workflowPage(request.url())) return route.abort();
+        return route.continue();
+      }); this.routeInstalled = true;
+    }
     if (!this.uploaded) {
       this.active(); this.event('Opening your signed-in profile and uploading your saved resume.');
       await this.ops.openProfile(this.page); this.active();
       await this.ops.syncResume(this.page, this.resume); this.active(); this.uploaded = true;
       this.event('Naukri confirmed the resume upload.');
-      const response = await this.page.goto(this.job.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      if (response?.status() >= 400) throw Error('Portal rejected the job page.');
     }
+      if (this.job.auto) {
+        const selected = await this.ops.discover(this.page, this.facts, this.preferences, { active: () => this.active(), event: message => this.event(message) });
+        this.active();
+        if (!selected) { this.state = 'SKIPPED'; this.event('No eligible native-apply listing found in this bounded search. No application was submitted.'); await this.capture(); return; }
+        this.job = selected;
+      }
+      if (!this.jobOpened) {
+        if (this.page.url() !== this.job.url) {
+          const response = await this.page.goto(this.job.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          if (response?.status() >= 400) throw Error('Portal rejected the job page.');
+        }
+        this.jobOpened = true;
+      }
     while (!terminal.has(this.state) && this.state !== 'WAITING_USER') {
       this.active();
       if (!workflowPage(this.page.url())) { await this.pause('Company-site navigation is outside this Naukri pilot. This application was not submitted.'); return; }

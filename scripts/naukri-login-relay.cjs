@@ -70,7 +70,7 @@ class LoginRelay {
         .filter(el => { const text = buttonLabel(el).toLowerCase(); if (seen.has(text)) return false; seen.add(text); return true; }).slice(0, 12).map((el, i) => {
           const id = 'button-' + i; el.setAttribute('data-applybro-login', id); return { id, label: buttonLabel(el) };
         });
-      const headings = [...document.querySelectorAll('h1,h2,h3,h4,.widgetHead,.widgetTitle,[role=heading]')].filter(visible).map(el => el.textContent.trim().toLowerCase());
+      const headings = [...document.querySelectorAll('h1,h2,h3,h4,.widgetHead,.widgetTitle,.text,[role=heading]')].filter(visible).map(el => el.textContent.trim().toLowerCase());
       const sections = ['resume', 'key skills', 'employment', 'education', 'profile summary'].filter(x => headings.includes(x)).length;
       const privatePage = /^\/mnjuser\/(homepage|profile)\/?$/.test(location.pathname);
       // Naukri renders some profile/navigation actions as div/span controls.
@@ -87,7 +87,7 @@ class LoginRelay {
       const messages = [...document.querySelectorAll('[role=alert],[class*=error i],.err,.err-msg,.errMsg,.formTextErr')].filter(visible).filter(el => el.innerText && el.innerText.length < 400).map(el => el.innerText.trim()).filter(Boolean).filter((x,i,all) => all.indexOf(x) === i).join(' ').slice(0, 400);
       return { fields, buttons, signedIn, name, challenge, loading, message: signedIn ? 'Signed-in Naukri profile observed.' : messages || 'Enter the fields requested by Naukri, then choose its login or verification button.' };
     });
-    s.signedIn = view.signedIn; s.version++; s.fields = view.fields; s.buttons = view.buttons;
+    s.signedIn = view.signedIn; if (view.signedIn) s.profileName = view.name; s.version++; s.fields = view.fields; s.buttons = view.buttons;
     if (view.signedIn && !s.connectionConfirmed) {
       const owner = [...this.sessions].find(([, session]) => session === s)?.[0];
       if (owner) {
@@ -162,6 +162,7 @@ class LoginRelay {
   async refresh(owner) {
     return this.locked(owner, async () => {
       const s = this.current(owner);
+      if (s.workflow) return { status: 'SIGNED_IN', signedIn: true, name: s.profileName || null, message: 'Your existing application task is available below.', expiresAt: s.expiresAt, job: s.workflow.status(), fields: [], buttons: [] };
       let view = await this.snapshot(s);
       // A completed login XHR can leave the SPA on a blank/onboarding screen.
       // Check the actual protected profile in this SAME context, once only.

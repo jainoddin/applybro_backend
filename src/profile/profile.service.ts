@@ -16,13 +16,13 @@ export class ProfileService {
 
   async browserMaterial(userId: string) {
     // Raw saved facts only: UI defaults such as Immediate Joiner are not answers.
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, include: { preferences: true } });
     if (!user) throw new NotFoundException('User profile not found');
     const files: any[] = await this.prisma.$queryRaw`SELECT "fileName","fileBytes","mimeType" FROM "Resume" WHERE "userId"=${userId} AND "fileBytes" IS NOT NULL ORDER BY "isDefault" DESC,"createdAt" DESC LIMIT 1`;
     if (!files[0]) throw new BadRequestException('Upload your resume in Get Started first.');
     const file = files[0];
     if (file.fileBytes.length > 5 * 1024 * 1024) throw new BadRequestException('Resume exceeds 5 MB.');
-    return { facts: factsFor(user), resume: { fileName: file.fileName, mimeType: file.mimeType, fileBase64: Buffer.from(file.fileBytes).toString('base64') } };
+    return { facts: factsFor(user), preferences: { roles: user.preferences?.titles || [], locations: user.preferences?.locations || [], threshold: user.minMatchScore }, resume: { fileName: file.fileName, mimeType: file.mimeType, fileBase64: Buffer.from(file.fileBytes).toString('base64') } };
   }
 
   async getProfile(userId: string) {
