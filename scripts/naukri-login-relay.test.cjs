@@ -88,8 +88,9 @@ async function fixture(mode = false) {
   try {
     await incomplete.start('owner'); const session = incomplete.current('owner');
     await session.page.goto('https://www.naukri.com/mnjuser/homepage');
-    await session.page.setContent('<main><h1 class="user-name">applybro</h1><button>Complete profile</button><a href="/mnjuser/homepage">My home</a><h2>Recommended jobs</h2></main>');
+    await session.page.setContent('<main><div class="user-name">applybro</div><div class="completion">35%</div><div><span>Complete profile</span></div><div class="navigation"><span>My home</span></div><h2>Recommended jobs</h2></main><aside><p>Are you a fresher or experienced jobseeker?</p><button>Fresher</button><button>Experienced</button></aside>');
     let view = await incomplete.refresh('owner'); assert.equal(view.status, 'SIGNED_IN'); assert.equal(view.name, 'applybro');
+    assert(view.expiresAt > Date.now() + 25 * 60 * 1000);
     await session.page.setContent('<main><button>Complete profile</button><h2>Recommended jobs</h2></main>');
     view = await incomplete.refresh('owner'); assert.notEqual(view.status, 'SIGNED_IN');
     console.log('PASS: incomplete authenticated homepage recognized; generic recommendations alone do not prove login');

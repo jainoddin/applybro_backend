@@ -73,10 +73,13 @@ class LoginRelay {
       const headings = [...document.querySelectorAll('h1,h2,h3,h4,.widgetHead,.widgetTitle,[role=heading]')].filter(visible).map(el => el.textContent.trim().toLowerCase());
       const sections = ['resume', 'key skills', 'employment', 'education', 'profile summary'].filter(x => headings.includes(x)).length;
       const privatePage = /^\/mnjuser\/(homepage|profile)\/?$/.test(location.pathname);
-      const profileLink = [...document.querySelectorAll('a,button')].some(el => visible(el) && /^(view|edit) profile$/i.test(el.textContent.trim()));
+      // Naukri renders some profile/navigation actions as div/span controls.
+      const profileControls = [...document.querySelectorAll('a,button,[role=button],span,div')].filter(visible);
+      const controlText = el => el.textContent.replace(/\s+/g, ' ').trim();
+      const profileLink = profileControls.some(el => /^(view|edit) profile$/i.test(controlText(el)));
       const visiblePassword = [...document.querySelectorAll('input[type=password]')].some(visible);
-      const completeProfile = [...document.querySelectorAll('a,button')].some(el => visible(el) && /^complete profile$/i.test(el.textContent.trim()));
-      const accountNavigation = [...document.querySelectorAll('a,button')].some(el => visible(el) && /^my home$/i.test(el.textContent.trim()));
+      const completeProfile = profileControls.some(el => /^complete profile$/i.test(controlText(el)));
+      const accountNavigation = profileControls.some(el => /^my home$/i.test(controlText(el)));
       const signedIn = privatePage && !visiblePassword && (sections >= 2 || profileLink && /profile performance/i.test(document.body.innerText) || completeProfile && accountNavigation && /recommended jobs|profile performance/i.test(document.body.innerText));
       const loading = !signedIn && [...document.querySelectorAll('[role=progressbar],[aria-busy=true],.loader,.loading,[class*=spinner i]')].some(visible);
       const name = signedIn ? [...document.querySelectorAll('[data-field=name],.user-name,.userName,.name,h1')].find(visible)?.textContent?.trim().slice(0, 120) || null : null;
@@ -85,6 +88,13 @@ class LoginRelay {
       return { fields, buttons, signedIn, name, challenge, loading, message: signedIn ? 'Signed-in Naukri profile observed.' : messages || 'Enter the fields requested by Naukri, then choose its login or verification button.' };
     });
     s.signedIn = view.signedIn; s.version++; s.fields = view.fields; s.buttons = view.buttons;
+    if (view.signedIn && !s.connectionConfirmed) {
+      const owner = [...this.sessions].find(([, session]) => session === s)?.[0];
+      if (owner) {
+        s.connectionConfirmed = true; clearTimeout(s.timer); s.expiresAt = Date.now() + 30 * 60 * 1000;
+        s.timer = setTimeout(() => { void this.close(owner); }, 30 * 60 * 1000); s.timer.unref();
+      }
+    }
     const processing = !view.signedIn && !!s.lastAction && (!!s.pendingAuth?.size || view.loading);
     const timedOut = processing && Date.now() - s.loginStartedAt > 20000;
     if (processing) view.message = timedOut ? 'Naukri has not finished its login request within 20 seconds. Sign-in is unconfirmed. Do not resend your password repeatedly; you can close this session.' : 'Naukri is processing your login. Waiting for its response; no additional input is requested yet.';

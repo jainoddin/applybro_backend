@@ -2,6 +2,8 @@
 
 The `/naukri-test` page now has a one-job action after a verified login. It reuses that exact browser context, not a local Chrome account and not a new login. An incomplete Naukri homepage with Complete profile, My home and recommended jobs is recognized as signed in.
 
+Profile navigation labels may be rendered as div/span controls. Detection checks their exact visible labels as well as the protected route, recommendations/profile markers and absence of a password form. An HTTP 200 alone still never establishes a connection. Once verified, the existing browser gets a bounded 30-minute window so it does not close while preparing the application.
+
 The authenticated API reads the current user's immutable saved resume bytes and raw saved profile fields from `/profile/browser-material`. It does not use UI defaults for salary, notice period or work rights, and does not infer unknown answers from a name or job description. Review your saved candidate details before starting.
 
 The user enters one exact Naukri listing URL, title and company and authorizes the upload and application. The private browser uploads the saved file to the profile, requires a fresh upload receipt, and opens the listing. The existing vision planner receives a masked screenshot, visible controls and saved facts. It selects one action at a time; the executor validates it against the current DOM, fills only supported fact bindings, and observes again. Unknown questions pause for owner input. No CAPTCHA, account restrictions or login protections are bypassed.
