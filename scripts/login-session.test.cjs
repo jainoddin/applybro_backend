@@ -13,3 +13,8 @@ test('Fast login returns usable fields without capturing a preview screenshot',a
  const relay=await fixture(new PrivateSessionStore({key:''}));
  try{const first=await relay.start('owner',{preview:false});assert.equal(first.preview,null);assert.ok(first.fields.length);const s=relay.sessions.get('owner');let screenshots=0;s.page.screenshot=async()=>{screenshots++;return Buffer.from('fixture');};const next=await relay.refresh('owner');assert.equal(next.preview,null);assert.equal(screenshots,0);assert.ok(next.fields.length);}finally{await relay.dispose();}
 });
+
+test('transport failure stays unconnected and is not reported as an incorrect password',async()=>{
+ const relay=await fixture(new PrivateSessionStore({key:''}));
+ try{await relay.start('owner',{preview:false});const session=relay.sessions.get('owner');session.network={outcome:'REQUEST_FAILED',errorCode:'net::ERR_ABORTED'};const result=await relay.snapshot(session);assert.equal(result.status,'LOGIN_REQUEST_FAILED');assert.equal(result.signedIn,false);assert.equal(result.sessionSaved,false);assert.match(result.message,/ERR_ABORTED/);assert.doesNotMatch(result.message,/incorrect password/i);}finally{await relay.dispose();}
+});

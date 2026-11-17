@@ -136,7 +136,7 @@ class LoginRelay {
     if (!view.signedIn && s.network?.outcome === 'REQUEST_FAILED') view.message = `The Naukri login request failed (${s.network.errorCode || 'network error'}). ${s.network.guardReason ? 'ApplyBro network guard: ' + s.network.guardReason + '. ' : ''}No sign-in was confirmed. ` + view.message;
     // Do not continually rasterize a full page while its login request is pending.
     // The free browser host has a small CPU budget. Cached previews stay labelled.
-    const status = view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : timedOut ? 'LOGIN_TIMEOUT' : processing ? 'LOGIN_PROCESSING' : view.fields.length ? 'INPUT_REQUIRED' : 'PAGE_UNVERIFIED';
+    const status = view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : timedOut ? 'LOGIN_TIMEOUT' : processing ? 'LOGIN_PROCESSING' : s.network?.outcome === 'REQUEST_FAILED' ? 'LOGIN_REQUEST_FAILED' : view.fields.length ? 'INPUT_REQUIRED' : 'PAGE_UNVERIFIED';
     if (s.previewEnabled!==false && !processing && (!s.preview || s.previewStatus !== status || Date.now() - s.previewAt >= 15000 || s.network?.outcome === 'REQUEST_FAILED' && s.previewNetwork !== s.network)) {
       const preview = await s.page.screenshot({ type: 'jpeg', quality: 55, mask: [s.page.locator('input,textarea,select')], timeout: 5000 }).then(b => b.toString('base64')).catch(() => null);
       if (preview) { s.preview = preview; s.previewAt = Date.now(); s.previewStatus = status; s.previewNetwork = s.network; }
