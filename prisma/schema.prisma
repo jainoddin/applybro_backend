@@ -74,6 +74,9 @@ model User {
   agentSession      AgentSession?
   agentLease        AgentUserLease?
   agentRuns         AgentRun[]
+  whatsAppContact   WhatsAppContact?
+  whatsAppQuestions WhatsAppQuestion[]
+  answerMemory      AgentAnswerMemory[]
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 }
@@ -204,8 +207,49 @@ model AgentRun {
  updatedAt DateTime @default(now()) @db.Timestamptz(6)
  commands AgentCommand[]
  notices AgentNotice[]
+ whatsAppQuestions WhatsAppQuestion[]
  events AgentEvent[]
  @@index([state,createdAt],map:"AgentRun_queue")
+}
+model WhatsAppContact {
+ userId String @id
+ user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+ phoneHash String @unique
+ encrypted String
+ pairHash String?
+ pairExpires DateTime? @db.Timestamptz(6)
+ verifiedAt DateTime? @db.Timestamptz(6)
+ consentedAt DateTime @default(now()) @db.Timestamptz(6)
+ reuseAnswers Boolean @default(false)
+}
+model AgentAnswerMemory {
+ userId String
+ user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+ key String
+ encrypted String
+ expiresAt DateTime? @db.Timestamptz(6)
+ updatedAt DateTime @default(now()) @db.Timestamptz(6)
+ @@id([userId,key])
+}
+model WhatsAppQuestion {
+ id String @id
+ runId String
+ run AgentRun @relation(fields:[runId],references:[id],onDelete:Cascade)
+ userId String
+ user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+ encrypted String
+ answer String?
+ state String @default("PENDING")
+ messageId String? @unique
+ expiresAt DateTime @db.Timestamptz(6)
+ createdAt DateTime @default(now()) @db.Timestamptz(6)
+ answeredAt DateTime? @db.Timestamptz(6)
+ consumedAt DateTime? @db.Timestamptz(6)
+ @@index([runId,state],map:"WhatsAppQuestion_run")
+}
+model WhatsAppInbound {
+ id String @id
+ createdAt DateTime @default(now()) @db.Timestamptz(6)
 }
 model AgentSession {
  userId String @id

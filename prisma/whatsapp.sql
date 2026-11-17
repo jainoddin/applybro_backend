@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS "WhatsAppContact" (
+ "userId" TEXT PRIMARY KEY REFERENCES "User"("id") ON DELETE CASCADE,
+ "phoneHash" TEXT NOT NULL UNIQUE, "encrypted" TEXT NOT NULL,
+ "pairHash" TEXT, "pairExpires" TIMESTAMPTZ, "verifiedAt" TIMESTAMPTZ,
+ "consentedAt" TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS "WhatsAppQuestion" (
+ "id" TEXT PRIMARY KEY, "runId" TEXT NOT NULL REFERENCES "AgentRun"("id") ON DELETE CASCADE,
+ "userId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE CASCADE,
+ "encrypted" TEXT NOT NULL, "answer" TEXT, "state" TEXT NOT NULL DEFAULT 'PENDING',
+ "messageId" TEXT UNIQUE, "expiresAt" TIMESTAMPTZ NOT NULL, "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ "answeredAt" TIMESTAMPTZ, "consumedAt" TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS "WhatsAppQuestion_run" ON "WhatsAppQuestion"("runId","state");
+CREATE TABLE IF NOT EXISTS "WhatsAppInbound" ("id" TEXT PRIMARY KEY, "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW());
