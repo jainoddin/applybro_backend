@@ -14,7 +14,7 @@ class LinkedInStore{
  async remove(owner){await fs.unlink(path.join(this.dir,this.id(owner)+'.enc')).catch(e=>{if(e.code!=='ENOENT')throw e;});}
 }
 class LinkedInLoginRelay extends LoginRelay{
- constructor(){super();this.store=new LinkedInStore();this.launch=o=>chromium.launch(o);}
+ constructor(){super();this.store=new LinkedInStore();this.deniedUntil=0;this.launch=o=>chromium.launch(o);}
  current(owner){const s=this.sessions.get(owner);if(!s||s.expiresAt<=Date.now())throw fail('Private LinkedIn session expired. Connect again.',410);if(!allowed(s.page.url()))throw fail('LinkedIn left the supported login pages.');this.touch(owner,s);return s;}
  async snapshot(s){
   if(!allowed(s.page.url()))throw fail('LinkedIn redirected outside supported login pages.');
@@ -45,6 +45,7 @@ class LinkedInLoginRelay extends LoginRelay{
   return{...view,status,version:s.version,sessionSaved:!!s.sessionSaved,origin:new URL(s.page.url()).origin,expiresAt:s.expiresAt,preview,message:view.signedIn?'LinkedIn signed-in navigation and profile observed.':view.message||(view.challenge?'Complete LinkedIn verification in the private browser.':'Enter the fields LinkedIn requests. Sign-in is not confirmed yet.')};
  }
  async start(owner,{preview=true}={}){return this.locked(owner,async()=>{
+  if(this.deniedUntil>Date.now())return{status:'BLOCKED',version:0,fields:[],buttons:[],signedIn:false,sessionSaved:false,httpStatus:403,retryAfterSeconds:Math.ceil((this.deniedUntil-Date.now())/1000),message:'LinkedIn is not accepting connections from this server. No account was connected. Please try again later.'};
   await this.close(owner);if(this.sessions.size+this.opening>=1)throw fail('Private LinkedIn browser is in use.',503);this.opening++;let browser,stage='DISPLAY';
   try{const screen=await display();stage='LAUNCH';browser=await this.launch({headless:false,...(screen?{env:{...process.env,DISPLAY:screen}}:{}),...(process.platform==='win32'?{executablePath:process.env.CLOUD_AGENT_CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe'}:{})});
    stage='SESSION_LOAD';const saved=await this.store.load(owner);stage='CONTEXT';const context=await browser.newContext({viewport:{width:1280,height:900},serviceWorkers:'block',...(saved?{storageState:saved}:{})});
@@ -52,7 +53,12 @@ class LinkedInLoginRelay extends LoginRelay{
    await context.route('**/*',async route=>{const r=route.request();try{const u=new URL(r.url());if(u.protocol!=='https:'||u.username||u.password||u.port&&u.port!=='443')return route.abort();if(await checkPublic(r.url()))return route.abort();if(r.isNavigationRequest()&&r.frame().parentFrame()===null&&!allowed(r.url()))return route.abort();return route.continue();}catch{return route.abort();}});
    const page=await context.newPage();page.on('popup',p=>void p.close());
    stage='NAVIGATION';const response=await page.goto(saved?'https://www.linkedin.com/feed/':'https://www.linkedin.com/login',{waitUntil:'domcontentloaded',timeout:20000});
-   if(response?.status()>=400){await browser.close();return{status:'BLOCKED',fields:[],buttons:[],signedIn:false,message:'LinkedIn denied this browser. No account connected.',httpStatus:response.status()};}
+   if(response?.status()>=400){
+    const httpStatus=response.status(),blocked=[401,403].includes(httpStatus);
+    if(httpStatus===403)this.deniedUntil=Date.now()+10*60000;
+    console.error(JSON.stringify({event:'LINKEDIN_PAGE_REJECTED',httpStatus,stage:'NAVIGATION'}));
+    await browser.close();return{status:blocked?'BLOCKED':'SERVICE_UNAVAILABLE',version:0,fields:[],buttons:[],signedIn:false,sessionSaved:false,message:blocked?'LinkedIn is not accepting connections from this server. No account was connected. Please try again later.':'LinkedIn is temporarily unavailable. No account was connected.',httpStatus};
+   }
    stage='INSPECTION';await page.waitForSelector('input:not([type=hidden]),nav,h1',{timeout:1500}).catch(()=>{});const s={id:randomUUID(),owner,previewEnabled:preview,browser,page,version:0,fields:[],buttons:[],pendingAuth:new Map()};this.sessions.set(owner,s);this.touch(owner,s);return await this.snapshot(s);
   }catch(e){
    const timeout=e?.name==='TimeoutError'||/timeout|timed out/i.test(e?.message||'');
