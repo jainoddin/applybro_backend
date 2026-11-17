@@ -218,6 +218,21 @@ class LoginRelay {
   async jobStatus(owner,onConfirmed) { const s = this.current(owner); if (!s.workflow) throw error('No job started.');if(onConfirmed)s.workflow.ops.onConfirmed=onConfirmed;await s.workflow.refreshOutcome();await s.workflow.saveReceipt();return s.workflow.status(); }
   async jobStop(owner) { const s = this.current(owner); if (!s.workflow) throw error('No job started.'); s.workflow.stop(); return s.workflow.status(); }
   async jobAnswer(owner, body) { return this.locked(owner, async () => { const s = this.current(owner); if (!s.workflow) throw error('No job started.'); return s.workflow.answer(body); }); }
+  async preview(owner){
+    return this.locked(owner,async()=>{
+      const s=this.current(owner);
+      if(s.page.isClosed())throw error('The server browser was closed. Start sign-in again.',410);
+      try{
+        const image=await s.page.screenshot({type:'jpeg',quality:50,animations:'disabled',caret:'hide',mask:[s.page.locator('input,textarea,select')],timeout:10000});
+        s.preview=image.toString('base64');s.previewAt=Date.now();
+        return{preview:s.preview,previewAt:s.previewAt,previewHistorical:false};
+      }catch(e){
+        const reason=e.name==='TimeoutError'?'CAPTURE_TIMEOUT':s.page.isClosed()?'BROWSER_CLOSED':'CAPTURE_FAILED';
+        console.error(JSON.stringify({event:'PORTAL_PREVIEW_FAILED',reason}));
+        throw error(reason==='CAPTURE_TIMEOUT'?'The server page did not finish its screenshot within 10 seconds. Try refreshing the preview.':'The server browser screenshot could not be captured. Check the connection.',503);
+      }
+    });
+  }
   async fill(owner, body) {
     return this.locked(owner, async () => {
       const s = this.current(owner);

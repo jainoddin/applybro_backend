@@ -73,6 +73,7 @@ class LinkedInLoginRelay extends LoginRelay{
   }finally{this.opening--;}
  });}
  rejectedPreview(owner){const item=this.rejectedPreviews.get(owner);if(!item||item.expiresAt<=Date.now()){this.rejectedPreviews.delete(owner);return{};}return{preview:item.preview,previewAt:item.previewAt,previewHistorical:true,httpStatus:item.httpStatus};}
+ async preview(owner){if(!this.sessions.has(owner)){const cached=this.rejectedPreview(owner);if(cached.preview)return cached;}return super.preview(owner);}
  async refresh(owner,{preview=false}={}){return this.locked(owner,async()=>{
   const rejected=this.rejectedPreview(owner);
   if(!this.sessions.has(owner)&&rejected.preview)return{...(preview?rejected:{}),status:[401,403].includes(rejected.httpStatus)?'BLOCKED':'SERVICE_UNAVAILABLE',version:0,signedIn:false,sessionSaved:false,fields:[],buttons:[],httpStatus:rejected.httpStatus,message:'The server browser opened LinkedIn, received an access rejection, and was closed. The screenshot shows that last response.'};
