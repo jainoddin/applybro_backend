@@ -1,3 +1,5 @@
+import { dailyProgress } from './daily-progress';
+import { hasSubmissionEvidence } from './application-evidence';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { ApplicationStatus, ApplyMode, PortalType } from '@prisma/client';
@@ -19,7 +21,7 @@ export class JobsService {
     // Legacy generated records are retained for review, but never presented as real jobs or submissions.
     const user=await this.prisma.user.findUnique({where:{id:userId},include:{preferences:true}});
     const live = apps.filter(app=>isLive(app)&&roleMatches(app.jobTitle,user?.preferences?.titles||[])).sort((a,b)=>b.matchScore-a.matchScore);
-    const confirmed = apps.filter(app => isLive(app)&&app.status === ApplicationStatus.APPLIED && (meta(app).providerReceipt||meta(app).browserConfirmation||meta(app).agentConfirmation));
+    const confirmed = apps.filter(app => hasSubmissionEvidence(app));
     const runs:any[]=await this.prisma.$queryRaw`SELECT "applicationId","stage","updatedAt" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' UNION ALL SELECT "applicationId",CASE "state" WHEN 'QUEUED' THEN 'CREATED' WHEN 'RUNNING' THEN 'OPENED' WHEN 'WAITING_USER' THEN 'REVIEW_REQUIRED' ELSE "state" END AS "stage","updatedAt" FROM "AgentRun" WHERE "userId"=${userId} AND "kind"='APPLY' ORDER BY "updatedAt" DESC`;
     const latest=new Map<string,string>();for(const run of runs)if(run.applicationId&&!latest.has(run.applicationId))latest.set(run.applicationId,run.stage);
     const active=[...latest.values()].filter(stage=>['CREATED','OPENED','SUBMITTING'].includes(stage));
@@ -41,6 +43,8 @@ export class JobsService {
           matchAssessed:m.matchAssessed===true,
         };
       }),
+      today: dailyProgress(apps, runs, user?.dailyApplyLimit ?? 5),
+      unverifiedRecords: apps.filter(app => app.status === 'APPLIED' && !hasSubmissionEvidence(app)).length,
       stats: { matched: live.length, applied: confirmed.length, inProgress: active.length, needsReview, unconfirmed, completed: confirmed.length },
       autoApplyActive: user?.activeMode==='AUTO_APPLY'&&user?.autoApplyConsent===true,
       portalStatuses: { LinkedIn: 'PARTNER_ACCESS_REQUIRED', Naukri: 'INTEGRATION_UNAVAILABLE', GoogleJobs: 'DISCOVERY_ONLY' },
@@ -103,7 +107,7 @@ export class JobsService {
     if(!user.subscription?.active || user.subscription.trialEnds<=new Date())throw new BadRequestException('Your plan has expired.');
     const day=new Date(Date.now()+19800000).toISOString().slice(0,10),from=new Date(day+'T00:00:00+05:30');
     const submitted=await this.prisma.jobApplication.findMany({where:{userId,status:'APPLIED',appliedAt:{gte:from}}});
-    const sent=submitted.filter(app=>isLive(app)&&(meta(app).providerReceipt||meta(app).browserConfirmation||meta(app).agentConfirmation)).length;
+    const sent=submitted.filter(app=>hasSubmissionEvidence(app)).length;
     const remaining=Math.max(0,user.dailyApplyLimit-sent);
     const blocked:any[]=await this.prisma.$queryRaw`SELECT "id","stage" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage" IN ('REVIEW_REQUIRED','UNKNOWN')`;
     if(blocked.length)return {appliedCount:0,autoApplyActive:true,runs:[],skipped:[],message:`${blocked.length} existing applications need attention. No additional search tabs were opened. Resume one browser task and resolve its form or submission outcome first.`};
@@ -126,7 +130,7 @@ export class JobsService {
   }
   async getAppliedJobs(userId: string) {
     const rows = await this.prisma.jobApplication.findMany({ where: { userId, status: ApplicationStatus.APPLIED }, orderBy: { appliedAt: 'desc' } });
-    return rows.filter(row => isLive(row) && (meta(row).providerReceipt||meta(row).browserConfirmation||meta(row).agentConfirmation)).map(row => ({ ...row, portalLabel: meta(row).source,
-      status: meta(row).providerReceipt?'Provider confirmed':meta(row).agentConfirmation?'Hosted browser confirmed':'Browser confirmed', appliedAtFormatted: row.appliedAt?.toISOString() || '', mode: row.applyMode }));
+    return rows.filter(row => hasSubmissionEvidence(row)).map(row => ({ ...row, portalLabel: meta(row).source,
+      status: meta(row).agentConfirmation?'Hosted browser confirmed':'Browser confirmed', appliedAtFormatted: row.appliedAt?.toISOString() || '', mode: row.applyMode }));
   }
 }

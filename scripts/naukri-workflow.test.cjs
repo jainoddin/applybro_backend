@@ -75,5 +75,7 @@ test('an attempted submission without receipt becomes unknown and is never repla
     task.start(); await task.task; assert.equal(task.state, 'UNKNOWN'); assert.equal(task.status().confirmation, null);
     task.start(); assert.equal(task.state, 'UNKNOWN');
     await assert.rejects(() => task.answer({ version: task.version, answers: [] }), /changed/);
+    await page.evaluate(()=>{const error=document.createElement('div');error.id='application-error';error.textContent='Something went wrong sending your application.';document.body.append(error);});
+    await task.refreshOutcome();assert.equal(task.state,'FAILED');assert.match(task.message,/Employer reported/);assert.equal(task.confirmation,undefined);task.start();assert.equal(task.state,'FAILED');
   } finally { await browser.close(); }
 });

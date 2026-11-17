@@ -1,19 +1,24 @@
 const dns=require('node:dns/promises');
 const {approvedUrl,publicAddress,factValue,validateAction}=require('../dist/agent/agent-policy');
 async function allowNetwork(value){try{const u=new URL(value);if(u.protocol!=='https:'||u.username||u.password||u.port&&u.port!=='443')return false;const answers=await dns.lookup(u.hostname,{all:true});return answers.length>0&&answers.every(x=>publicAddress(x.address));}catch{return false;}}
-async function observe(page){
+async function observe(page,{allowedUrl=approvedUrl,applicationOnly=false}={}){
  const frames=page.frames().slice(0,8),snapshots=[];let offset=0;
- for(let frameIndex=0;frameIndex<frames.length;frameIndex++){const frame=frames[frameIndex];if(frameIndex&&!approvedUrl(frame.url()))continue;let snapshot;try{snapshot=await frame.evaluate(({offset,frameIndex})=>{
+ for(let frameIndex=0;frameIndex<frames.length;frameIndex++){const frame=frames[frameIndex];if(frameIndex&&!allowedUrl(frame.url()))continue;let snapshot;try{snapshot=await frame.evaluate(({offset,frameIndex,applicationOnly})=>{
   const visible=el=>!!el.getClientRects().length&&getComputedStyle(el).visibility!=='hidden';
-  const elements=[...document.querySelectorAll('input,textarea,select,button,a[href],[role="button"]')].filter(el=>visible(el)||el.type==='file').slice(0,500);
+  document.querySelectorAll('[data-applybro-agent]').forEach(el=>el.removeAttribute('data-applybro-agent'));
+  const applicationForms=applicationOnly?[...document.forms].filter(form=>form.querySelector('input[type=file]')&&[...form.querySelectorAll('button,input[type=submit]')].some(el=>/submit application|apply|send application/i.test(el.innerText||el.value||''))):[];
+  const scope=applicationForms.length===1?applicationForms[0]:document;
+  const elements=[...scope.querySelectorAll('input,textarea,select,button,a[href],[role="button"]')].filter(el=>visible(el)||el.type==='file').slice(0,500);
   const fields=elements.map((el,index)=>{const id=offset+index;el.setAttribute('data-applybro-agent',String(id));return {id,frame:frameIndex,tag:el.tagName,type:el.type||'',label:[el.labels&&[...el.labels].map(x=>x.innerText).join(' '),el.getAttribute('aria-label'),el.getAttribute('placeholder'),el.name,el.innerText].filter(Boolean).join(' ').replace(/\s+/g,' ').slice(0,220),required:!!el.required,filled:el.type==='file'?!!el.files?.length:['checkbox','radio'].includes(el.type)?el.checked:!!el.value,options:el.tagName==='SELECT'?[...el.options].map(x=>({value:x.value,text:x.textContent})).slice(0,60):undefined,href:el.tagName==='A'?el.href:undefined};});
   const verifiedCaptcha=[...document.querySelectorAll('textarea[name="g-recaptcha-response"],textarea[name="h-captcha-response"],input[name="cf-turnstile-response"]')].some(el=>!!el.value);
   const challenge=[...document.querySelectorAll('input[autocomplete="one-time-code"],input[type="password"],input[name*="otp" i]')].some(visible)||!verifiedCaptcha&&[...document.querySelectorAll('iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="challenges.cloudflare.com"],[id*="captcha" i]')].some(visible);
-  const confirmations=[...document.querySelectorAll('#application_confirmation,.application-confirmation,[data-qa="application-confirmation"],.apply-message,.postApply-message,.applySuccess,.applied-success,[role="alert"],main h1,main h2')].filter(visible).map(x=>x.innerText||'').find(x=>/(application (has been |was )?(submitted|received)|thank you for (applying|your application)|successfully applied)/i.test(x))||'';
+  const confirmations=[...document.querySelectorAll('#application_confirmation,.application-confirmation,[data-qa="application-confirmation"],.apply-message,.postApply-message,.applySuccess,.applied-success,[role="alert"],h1,h2,h3')].filter(visible).map(x=>x.innerText||'').find(x=>/(application (has been |was )?(submitted|received)|thank you for (applying|your application)|successfully applied)/i.test(x))||'';
   const naukriReceipt = location.origin === 'https://www.naukri.com' && /^\/myapply\/saveApply\/?$/.test(location.pathname) ? [...document.querySelectorAll('h1,h2,h3,.apply-message,.postApply-message,.applySuccess,.applied-success,[role=alert],.apply-message-container')].filter(visible).map(el=>el.innerText||'').find(text=>/^Applied to\s+["“]?\S/i.test(text.trim())&&text.length<500)||'' : '';
-  return {url:location.href,title:document.title,text:(document.querySelector('main')||document.body).innerText.slice(0,24000),fields,challenge,confirmation:(confirmations||naukriReceipt).slice(0,400)};
- },{offset,frameIndex});}catch{continue;}offset+=snapshot.fields.length;snapshots.push(snapshot);}
- const main=snapshots[0];if(!main)throw Error('No readable browser page.');return {...main,text:snapshots.map(x=>x.text).join('\n').slice(0,24000),fields:snapshots.flatMap(x=>x.fields).slice(0,500),challenge:snapshots.some(x=>x.challenge),confirmation:snapshots.find(x=>x.confirmation)?.confirmation||''};
+  const submissionError=[...document.querySelectorAll('#application-error,[data-qa="application-error"],.application-error')].filter(visible).map(el=>el.innerText||'').find(text=>/went wrong|failed|unable|could not|try again/i.test(text))||'';
+  const exactNaukriReceipt=location.origin==='https://www.naukri.com'&&/^\/myapply\/saveApply\/?$/.test(location.pathname)?[...document.querySelectorAll('h1,h2,h3,p,div,span')].filter(visible).map(el=>(el.innerText||'').replace(/\s+/g,' ').trim()).find(text=>/^Applied to\s+["“][^"”\n]+["”]$/i.test(text)&&text.length<250)||'':'';
+  return {url:location.href,title:document.title,text:(document.querySelector('main')||document.body).innerText.slice(0,24000),fields,challenge,submissionError:submissionError.slice(0,500),confirmation:(confirmations||exactNaukriReceipt).slice(0,400)};
+ },{offset,frameIndex,applicationOnly});}catch{continue;}offset+=snapshot.fields.length;snapshots.push(snapshot);}
+ const main=snapshots[0];if(!main)throw Error('No readable browser page.');return {...main,text:snapshots.map(x=>x.text).join('\n').slice(0,24000),fields:snapshots.flatMap(x=>x.fields).slice(0,500),challenge:snapshots.some(x=>x.challenge),submissionError:snapshots.find(x=>x.submissionError)?.submissionError||'',confirmation:snapshots.find(x=>x.confirmation)?.confirmation||''};
 }
 const element=(page,id,frame=0)=>{const target=page.frames()[frame];if(!target)throw Error('The embedded application changed.');return target.locator(`[data-applybro-agent="${id}"]`);};
 async function targetAt(page,x,y){
@@ -27,9 +32,9 @@ async function targetAt(page,x,y){
  return target.evaluate(({x,y})=>{const el=document.elementFromPoint(x,y)?.closest('button,a,[role="button"],input[type="submit"]');return el?{label:el.innerText||el.getAttribute('aria-label')||el.value||'',tag:el.tagName,href:el.href||'',verification:!!el.closest('form,[role=dialog]')?.querySelector('input[type=password],input[autocomplete=one-time-code],input[name*=otp i]')}:null;},point);
 }
 function submitLike(field){return /\b(submit|send application|finish application|apply( now)?)\b/i.test(field.label);}
-async function execute(page,observation,raw,{facts,resume,reserve,resumeUploaded=false,onUpload=async()=>{},expectedTitle='',expectedCompany=''}){
+async function execute(page,observation,raw,{facts,resume,reserve,resumeUploaded=false,onUpload=async()=>{},expectedTitle='',expectedCompany='',allowedUrl=approvedUrl,verifyIdentity=null,applicationOnly=false}){
  const action=validateAction(raw),previous=observation.fields.find(x=>x.id===action.element);
- observation=await observe(page);const field=observation.fields.find(x=>x.id===action.element);
+ observation=await observe(page,{allowedUrl,applicationOnly});const field=observation.fields.find(x=>x.id===action.element);
  if(previous&&(!field||previous.label!==field.label||previous.type!==field.type||previous.frame!==field.frame||previous.tag!==field.tag||previous.href!==field.href))throw Error('The page changed before the action. Review the current form.');
  if(['FILL','UPLOAD','CLICK','SUBMIT'].includes(action.kind)&&!field)throw Error('The page changed; target is no longer available.');
  if(action.kind==='FILL'){
@@ -42,7 +47,7 @@ async function execute(page,observation,raw,{facts,resume,reserve,resumeUploaded
  if(action.kind==='CLICK'||action.kind==='SUBMIT'){
   if(!['BUTTON','A'].includes(field.tag)&&!['submit','button'].includes(field.type))throw Error('Non-button choices require user review.');
   if(field.tag==='A'&&!/apply|application|continue|next|sign in|log in/i.test(field.label))throw Error('Unrelated page navigation is not an application step.');
-  if(field.tag==='A'){if(!approvedUrl(field.href))throw Error('The external employer domain needs operator approval.');if(action.kind==='SUBMIT')throw Error('A navigation link is not a submission receipt.');}
+  if(field.tag==='A'){if(!allowedUrl(field.href))throw Error('The external employer domain needs operator approval.');if(action.kind==='SUBMIT')throw Error('A navigation link is not a submission receipt.');}
   else if(new URL(page.url()).hostname==='www.naukri.com'&&/^apply on company site$/i.test(field.label.trim())){
    if(action.kind!=='CLICK')throw Error('Company-site entry is navigation, not a confirmed submission.');
   }
@@ -51,12 +56,13 @@ async function execute(page,observation,raw,{facts,resume,reserve,resumeUploaded
    if(action.kind!=='SUBMIT')throw Error('This button may submit an application; explicit submission action required.');
    if(!resumeUploaded)throw Error('The stored resume has not been uploaded in this application. User review required.');
    const words=expectedTitle.toLowerCase().match(/[a-z]{3,}/g)||[];if(!words.length||words.filter(w=>observation.text.toLowerCase().includes(w)).length/words.length<0.7)throw Error('The current application job identity needs user review.');
-   if(expectedCompany){
+   if(verifyIdentity){if(!await verifyIdentity())throw Error('The current job and company identity need user review.');}
+   else if(expectedCompany){
     const identity=await page.evaluate(({title,company})=>{const visible=el=>!!el.getClientRects().length&&getComputedStyle(el).visibility!=='hidden';const normalize=value=>value.toLowerCase().replace(/\s+/g,' ').trim();const titleWords=normalize(title).match(/[a-z]{3,}/g)||[];const heading=[...document.querySelectorAll('h1')].filter(visible).some(el=>titleWords.length&&titleWords.filter(w=>normalize(el.textContent).includes(w)).length/titleWords.length>=0.7);const employer=[...document.querySelectorAll('h2,a[href],[class*=comp-name],[class*=company-name]')].filter(visible).some(el=>el.textContent.length<240&&normalize(el.textContent).includes(normalize(company)));return heading&&employer;},{title:expectedTitle,company:expectedCompany});
     if(!identity)throw Error('The current job and company identity need user review.');
    }
    if(observation.challenge)throw Error('Verification requires your action.');
-   const invalid=await page.locator('input:invalid,textarea:invalid,select:invalid').count();if(invalid)throw Error('Some required fields or answer formats are invalid.');
+   const invalid=await element(page,field.id,field.frame).evaluate(el=>{const scope=el.form||el.closest('form')||document;return [...scope.querySelectorAll('input:invalid,textarea:invalid,select:invalid')].some(input=>input.getClientRects().length);});if(invalid)throw Error('Some required fields or answer formats are invalid.');
    if(observation.fields.some(x=>x.required&&!x.filled&&['INPUT','TEXTAREA','SELECT'].includes(x.tag)))throw Error('Required employer questions are unanswered.');
    await reserve();
   }else if(action.kind==='SUBMIT')throw Error('No recognized submission control.');

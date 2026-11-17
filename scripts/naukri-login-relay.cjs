@@ -10,6 +10,8 @@ const publicAddress = value => {
 const LOGIN = 'https://www.naukri.com/nlogin/login';
 const allowedPage = url => { try { const u = new URL(url); return u.protocol === 'https:' && !u.username && !u.password && (!u.port || u.port === '443') && ['www.naukri.com', 'naukri.com'].includes(u.hostname) && /^\/(nlogin(?:\/|$)|mnjuser\/(?:homepage|profile)(?:\/|$))/.test(u.pathname); } catch { return false; } };
 const { OneJob, workflowPage } = require('./naukri-workflow.cjs');
+const {PrivateSessionStore}=require('./private-session-store.cjs');
+const {randomUUID}=require('node:crypto');
 const error = (message, status = 400) => Object.assign(new Error(message), { status });
 const authRequest = request => { try { const u = new URL(request.url()); return request.method() === 'POST' && /(^|\.)naukri\.com$/i.test(u.hostname) && /login|auth|otp|verify|session/i.test(u.pathname); } catch { return false; } };
 let displayProcess, displayReady;
@@ -29,19 +31,50 @@ async function display() {
 }
 
 class LoginRelay {
-  constructor() { this.sessions = new Map(); this.busy = new Set(); this.opening = 0; this.launch = options => chromium.launch(options); }
+  constructor() { this.sessions = new Map(); this.busy = new Set(); this.opening = 0; this.store=new PrivateSessionStore();this.launch = options => chromium.launch(options); }
+  async saveSession(s){if(!s.signedIn||!s.owner||!this.store.key)return false;s.sessionSaved=await this.store.save(s.owner,await s.page.context().storageState());s.savedAt=Date.now();return s.sessionSaved;}
+  touch(owner,s){clearTimeout(s.timer);s.expiresAt=Date.now()+(s.connectionConfirmed?30*60*1000:300000);s.timer=setTimeout(()=>{if(['RUNNING','SUBMITTING'].includes(s.workflow?.state))this.touch(owner,s);else void this.close(owner);},s.expiresAt-Date.now());s.timer.unref();}
+  async queueOtp(s,view){
+    if(s.otpTicket||s.otpRequested)return;const fields=view.fields.filter(f=>f.tag==='INPUT'&&['text','tel','number'].includes(f.type)&&/\botp\b|one.?time|verification code/i.test(f.label));if(fields.length!==1||fields[0].filled)return;
+    s.otpRequested=true;const field=fields[0];const result=await s.otpBridge.ask({sessionId:s.id,origin:new URL(s.page.url()).origin}).catch(()=>({state:'UNAVAILABLE'}));s.otpStatus=result.state;
+    if(result.state!=='ACCEPTED')return;
+    s.otpTicket={id:result.id,url:s.page.url(),field,expiresAt:result.expiresAt};this.touch(s.owner,s);
+    s.otpTimer=setInterval(()=>{if(!this.busy.has(s.owner))void this.locked(s.owner,()=>this.consumeOtp(s)).catch(()=>{s.otpStatus='NEEDS_MANUAL_INPUT';clearInterval(s.otpTimer);});},5000);s.otpTimer.unref();
+  }
+  async consumeOtp(s){
+    const ticket=s.otpTicket;if(!ticket||this.sessions.get(s.owner)!==s||s.closing)return;
+    if(Date.now()>=ticket.expiresAt){s.otpStatus='EXPIRED';clearInterval(s.otpTimer);await s.otpBridge.cancel(ticket.id,s.id).catch(()=>{});return;}
+    const answer=await s.otpBridge.poll(ticket.id,s.id);if(answer.state==='WAITING')return;
+    clearInterval(s.otpTimer);s.otpStatus=answer.state;
+    if(answer.state!=='ANSWERED')return;
+    let code=answer.value;delete answer.value;
+    try{
+      if(!/^\d{4,8}$/.test(code||'')||s.page.url()!==ticket.url)throw Error('OTP page changed.');
+      const view=await this.snapshot(s);const fields=view.fields.filter(f=>f.id===ticket.field.id&&f.label===ticket.field.label&&f.type===ticket.field.type&&f.tag==='INPUT');
+      if(view.challenge||fields.length!==1||fields[0].filled)throw Error('OTP field changed, was filled manually, or CAPTCHA requires manual input.');
+      const verify=view.buttons.filter(b=>/^(verify(?: otp)?|submit otp)$/i.test(b.label)),fallback=view.buttons.filter(b=>/^(continue|log ?in|sign in)$/i.test(b.label)),buttons=verify.length?verify:fallback;
+      if(buttons.length!==1)throw Error('OTP verification button is ambiguous.');
+      const field=s.page.locator(`[data-applybro-login="${fields[0].id}"]`);await field.fill(code,{timeout:3000});code='';
+      if(!await field.evaluate(el=>el.checkValidity()))throw Error('OTP format does not match the portal.');
+      s.lastAction='Verify OTP';s.loginStartedAt=Date.now();s.network=null;await s.page.locator(`[data-applybro-login="${buttons[0].id}"]`).click({timeout:5000});s.otpStatus='ENTERED';await s.page.waitForTimeout(1500);await this.snapshot(s);
+    }finally{code='';}
+  }
   async locked(owner, action) {
     if (this.busy.has(owner)) throw error('Please wait for the current browser action.', 409);
     this.busy.add(owner); try { return await action(); } finally { this.busy.delete(owner); }
   }
-  async close(owner) {
+  async close(owner,{forget=false}={}) {
+    if(forget)await this.store.remove(owner);
     const s = this.sessions.get(owner); if (!s) return { closed: true };
+    if(!forget)await this.saveSession(s).catch(()=>{});
+    if(s.otpTicket&&s.otpBridge)await s.otpBridge.cancel(s.otpTicket.id,s.id).catch(()=>{});clearInterval(s.otpTimer);
     s.closing = true; s.workflow?.stop(); s.pendingAuth?.clear(); this.sessions.delete(owner); clearTimeout(s.timer); await s.browser.close().catch(() => {}); return { closed: true };
   }
   current(owner) {
     const s = this.sessions.get(owner);
     if (!s || s.expiresAt <= Date.now()) throw error('Private login expired or the server restarted. Connect again.', 410);
-    if (!(s.workflow ? workflowPage(s.page.url()) : allowedPage(s.page.url()))) throw error('The browser is not on a supported Naukri page.');
+    if (!(s.workflow ? s.workflow.navigation.allowed(s.page.url()) : allowedPage(s.page.url()))) throw error('The browser is not on a supported Naukri page.');
+    this.touch(owner,s);
     return s;
   }
   async snapshot(s) {
@@ -91,10 +124,11 @@ class LoginRelay {
     if (view.signedIn && !s.connectionConfirmed) {
       const owner = [...this.sessions].find(([, session]) => session === s)?.[0];
       if (owner) {
-        s.connectionConfirmed = true; clearTimeout(s.timer); s.expiresAt = Date.now() + 30 * 60 * 1000;
-        s.timer = setTimeout(() => { void this.close(owner); }, 30 * 60 * 1000); s.timer.unref();
+        s.connectionConfirmed = true;this.touch(owner,s);
       }
     }
+    if(view.signedIn&&(!s.savedAt||Date.now()-s.savedAt>60000))await this.saveSession(s).catch(()=>{s.sessionSaved=false;});
+    if(!view.signedIn&&!view.challenge&&s.otpBridge)await this.queueOtp(s,view);
     const processing = !view.signedIn && !!s.lastAction && (!!s.pendingAuth?.size || view.loading);
     const timedOut = processing && Date.now() - s.loginStartedAt > 20000;
     if (processing) view.message = timedOut ? 'Naukri has not finished its login request within 20 seconds. Sign-in is unconfirmed. Do not resend your password repeatedly; you can close this session.' : 'Naukri is processing your login. Waiting for its response; no additional input is requested yet.';
@@ -103,13 +137,13 @@ class LoginRelay {
     // Do not continually rasterize a full page while its login request is pending.
     // The free browser host has a small CPU budget. Cached previews stay labelled.
     const status = view.signedIn ? 'SIGNED_IN' : view.challenge ? 'VERIFICATION_REQUIRED' : timedOut ? 'LOGIN_TIMEOUT' : processing ? 'LOGIN_PROCESSING' : view.fields.length ? 'INPUT_REQUIRED' : 'PAGE_UNVERIFIED';
-    if (!processing && (!s.preview || s.previewStatus !== status || Date.now() - s.previewAt >= 15000 || s.network?.outcome === 'REQUEST_FAILED' && s.previewNetwork !== s.network)) {
+    if (s.previewEnabled!==false && !processing && (!s.preview || s.previewStatus !== status || Date.now() - s.previewAt >= 15000 || s.network?.outcome === 'REQUEST_FAILED' && s.previewNetwork !== s.network)) {
       const preview = await s.page.screenshot({ type: 'jpeg', quality: 55, mask: [s.page.locator('input,textarea,select')], timeout: 5000 }).then(b => b.toString('base64')).catch(() => null);
       if (preview) { s.preview = preview; s.previewAt = Date.now(); s.previewStatus = status; s.previewNetwork = s.network; }
     }
-    return { ...view, ...(processing ? { fields: [], buttons: [] } : {}), status, version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: false, preview: s.preview || null, previewAt: s.previewAt || null, network: s.network || null, lastAction: s.lastAction || null, transport: s.transport };
+    return { ...view, ...(processing ? { fields: [], buttons: [] } : {}), status, version: s.version, origin: new URL(s.page.url()).origin, expiresAt: s.expiresAt, sessionSaved: !!s.sessionSaved,otpStatus:s.otpStatus||null, preview: s.previewEnabled===false?null:s.preview || null, previewAt: s.previewEnabled===false?null:s.previewAt || null, network: s.network || null, lastAction: s.lastAction || null, transport: s.transport };
   }
-  async start(owner) {
+  async start(owner,{otpBridge=null,preview=true}={}) {
     return this.locked(owner, async () => {
       await this.close(owner);
       if (this.sessions.size + this.opening >= 1) throw error('The pilot browser is in use. Please try again shortly.', 503);
@@ -120,14 +154,16 @@ class LoginRelay {
         // Opt-in transport compatibility for observed HTTP/2 protocol failures.
         // HTTPS certificate validation and all destination guards remain enabled.
         browser = await this.launch({ headless: false, ...(http1Only ? { args: ['--disable-http2', '--disable-quic'] } : {}), ...(screen ? { env: { ...process.env, DISPLAY: screen } } : {}), ...(process.platform === 'win32' ? { executablePath: process.env.CLOUD_AGENT_CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe' } : {}) });
-        const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block' });
+        const saved=await this.store.load(owner);
+        const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block',...(saved?{storageState:saved}:{}) });
         let s;
         await context.route('**/*', async route => {
           const r = route.request(); let u; try { u = new URL(r.url()); } catch { return route.abort(); }
           const abort = reason => { if (s && authRequest(r)) s.network = { outcome: 'REQUEST_FAILED', guardReason: reason }; return route.abort(); };
           if (u.protocol !== 'https:' || u.port && u.port !== '443' || u.username || u.password || /^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[)/i.test(u.hostname)) return abort('INVALID_PUBLIC_HTTPS_DESTINATION');
           try { const addresses = await dns.lookup(u.hostname, { all: true }); if (!addresses.length || !addresses.every(x => publicAddress(x.address))) return abort('NON_PUBLIC_ADDRESS'); } catch { return abort('DNS_LOOKUP_FAILED'); }
-          if (r.isNavigationRequest() && r.frame().parentFrame() === null && !(s?.workflow ? workflowPage(r.url()) : allowedPage(r.url()))) return abort('UNSUPPORTED_LOGIN_NAVIGATION');
+          let mainNavigation=false;try{mainNavigation=r.isNavigationRequest()&&r.frame().parentFrame()===null;}catch{mainNavigation=r.isNavigationRequest();}
+          if (mainNavigation && !(s?.workflow ? s.workflow.navigation.allowed(r.url()) : allowedPage(r.url()))) return abort('UNSUPPORTED_LOGIN_NAVIGATION');
           return route.continue();
         });
         const page = await context.newPage();
@@ -137,10 +173,10 @@ class LoginRelay {
           await controls.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
           await controls.detach();
         }
-        const response = await page.goto(LOGIN, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        const response = await page.goto(saved?'https://www.naukri.com/mnjuser/profile':LOGIN, { waitUntil: 'domcontentloaded', timeout: 20000 });
         if (response?.status() >= 400) { await browser.close(); return { status: 'BLOCKED', httpStatus: response.status(), message: 'Naukri denied this browser. No account was connected.', fields: [], buttons: [] }; }
-        await page.waitForTimeout(1500);
-        s = { browser, page, version: 0, fields: [], buttons: [], pendingAuth: new Map(), transport: http1Only ? 'HTTP1_COMPATIBILITY' : 'BROWSER_DEFAULT', expiresAt: Date.now() + 300000 };
+        await page.waitForSelector('input:not([type=hidden]),[role=heading],.user-name,.userName,h1',{timeout:1500}).catch(()=>{});
+        s = { id:randomUUID(),owner,otpBridge,previewEnabled:preview,browser, page, version: 0, fields: [], buttons: [], pendingAuth: new Map(), transport: http1Only ? 'HTTP1_COMPATIBILITY' : 'BROWSER_DEFAULT', expiresAt: Date.now() + 300000 };
         page.on('request', request => { if (authRequest(request)) s.pendingAuth.set(request, Date.now()); });
         page.on('requestfinished', request => { s.pendingAuth.delete(request); });
         page.on('response', response => { if (authRequest(response.request())) s.network = { outcome: 'RESPONSE', httpStatus: response.status() }; });
@@ -177,7 +213,7 @@ class LoginRelay {
       return view;
     });
   }
-  async jobStart(owner, body, loadMaterial) {
+  async jobStart(owner, body, loadMaterial, onConfirmed) {
     return this.locked(owner, async () => {
       const s = this.current(owner);
       if (s.workflow) throw error('This session already has a job attempt. Check its result; do not retry an uncertain submission.', 409);
@@ -185,15 +221,14 @@ class LoginRelay {
       if (!current.signedIn) throw error('Confirm your signed-in Naukri profile first.', 409);
       try { OneJob.validate(body); } catch (e) { throw error(e.message); }
       const material = await loadMaterial();
-      try { s.workflow = new OneJob(s.page, material, body); } catch (e) { throw error(e.message, 409); }
+      try { s.workflow = new OneJob(s.page, material, body,{onPage:page=>{s.page=page;},onConfirmed}); } catch (e) { throw error(e.message, 409); }
       // A login plus a single application can outlive the five-minute login pilot.
-      clearTimeout(s.timer); s.expiresAt = Date.now() + 30 * 60 * 1000;
-      s.timer = setTimeout(() => { void this.close(owner); }, 30 * 60 * 1000); s.timer.unref();
+      this.touch(owner,s);
       s.workflow.start();
       return s.workflow.status();
     });
   }
-  async jobStatus(owner) { const s = this.current(owner); if (!s.workflow) throw error('No job started.'); return s.workflow.status(); }
+  async jobStatus(owner,onConfirmed) { const s = this.current(owner); if (!s.workflow) throw error('No job started.');if(onConfirmed)s.workflow.ops.onConfirmed=onConfirmed;await s.workflow.refreshOutcome();await s.workflow.saveReceipt();return s.workflow.status(); }
   async jobStop(owner) { const s = this.current(owner); if (!s.workflow) throw error('No job started.'); s.workflow.stop(); return s.workflow.status(); }
   async jobAnswer(owner, body) { return this.locked(owner, async () => { const s = this.current(owner); if (!s.workflow) throw error('No job started.'); return s.workflow.answer(body); }); }
   async fill(owner, body) {
@@ -222,6 +257,7 @@ class LoginRelay {
       if (s.pendingAuth.size) throw error('Naukri is still processing the previous login request. Please wait.', 409);
       if (body.version !== s.version) throw error('Naukri changed its page. Refresh first.', 409);
       const button = s.buttons.find(b => b.id === body.id); if (!button) throw error('Choose a current Naukri login button.');
+      if(/resend|send otp|get otp|use otp/i.test(button.label)){if(s.otpTicket&&s.otpBridge)await s.otpBridge.cancel(s.otpTicket.id,s.id).catch(()=>{});clearInterval(s.otpTimer);s.otpTicket=null;s.otpRequested=false;}
       const el = s.page.locator(`[data-applybro-login="${button.id}"]`);
       if ((await el.evaluate(el => (el.innerText || el.value || '').replace(/\s+/g, ' ').trim())) !== button.label) throw error('The login button changed. Refresh first.', 409);
       s.lastAction = button.label; s.loginStartedAt = Date.now(); s.network = null; s.profileCheckAttempted = false;
@@ -231,14 +267,19 @@ class LoginRelay {
   }
   async dispose() { await Promise.all([...this.sessions.keys()].map(id => this.close(id))); displayProcess?.kill(); }
 }
+function backendOrigin() {
+  const u = new URL(process.env.APPLYBRO_BACKEND_URL || process.env.BACKEND_API_URL || 'https://applybro-backend.onrender.com');
+  if (u.username || u.password || u.search || u.hash || u.pathname !== '/' || !(u.protocol === 'https:' || u.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(u.hostname))) throw Error('Configure a valid trusted ApplyBro backend origin.');
+  return u.origin;
+}
 async function authenticate(req) {
   const token = req.headers.authorization;
   if (typeof token !== 'string' || !/^Bearer \S+$/.test(token) || token.length > 8192) throw error('Sign in to ApplyBro first.', 401);
   let response;
-  try { response = await fetch('https://applybro-backend.onrender.com/auth/me', { headers: { Authorization: token }, signal: AbortSignal.timeout(15000), redirect: 'error' }); }
+  try { response = await fetch(backendOrigin()+'/auth/me', { headers: { Authorization: token }, signal: AbortSignal.timeout(15000), redirect: 'error' }); }
   catch { throw error('ApplyBro authentication server is unavailable. Try again shortly.', 503); }
   if (!response.ok) throw error('Your ApplyBro session could not be verified. Sign in again.', response.status === 401 ? 401 : 503);
   const user = await response.json(); if (typeof user.id !== 'string' || !user.id) throw error('Account verification failed.', 401);
   return user.id;
 }
-module.exports = { LoginRelay, authenticate, allowedPage };
+module.exports = { LoginRelay, authenticate, allowedPage, backendOrigin, display, publicAddress };

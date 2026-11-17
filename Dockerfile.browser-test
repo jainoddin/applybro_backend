@@ -6,10 +6,16 @@ RUN npm ci --ignore-scripts
 COPY scripts/server-browser-probe.cjs ./scripts/server-browser-probe.cjs
 COPY scripts/server-browser-host.cjs ./scripts/server-browser-host.cjs
 COPY scripts/naukri-login-relay.cjs ./scripts/naukri-login-relay.cjs
+COPY scripts/linkedin-login-relay.cjs ./scripts/linkedin-login-relay.cjs
+COPY scripts/connect-login.cjs ./scripts/connect-login.cjs
+COPY scripts/backend-session-store.cjs ./scripts/backend-session-store.cjs
+COPY scripts/private-session-store.cjs ./scripts/private-session-store.cjs
 COPY scripts/naukri-workflow.cjs scripts/naukri-flow.cjs scripts/cloud-browser.cjs scripts/naukri-discovery.cjs ./scripts/
+COPY scripts/company-navigation.cjs ./scripts/company-navigation.cjs
 COPY src/agent/agent-policy.ts ./src/agent/agent-policy.ts
 COPY src/jobs/skill-match.ts ./src/jobs/skill-match.ts
 RUN npx tsc src/agent/agent-policy.ts src/jobs/skill-match.ts --outDir dist --rootDir src --target ES2022 --module commonjs --skipLibCheck
+RUN mkdir -p /app/secrets/browser-sessions /app/secrets/linkedin-sessions && chown -R pwuser:pwuser /app/secrets
 USER pwuser
 EXPOSE 10000
 CMD ["node", "scripts/server-browser-host.cjs"]

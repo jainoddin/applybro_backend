@@ -1,0 +1,6 @@
+﻿const {test}=require('node:test');const assert=require('node:assert/strict');
+const {dailyProgress}=require('../dist/jobs/daily-progress');
+const now=new Date('2026-11-17T10:00:00Z');
+const confirmed=id=>({id,status:'APPLIED',appliedAt:now,matchReasons:{browserConfirmation:{text:'Application submitted',observedAt:now.toISOString()}}});
+test('daily dashboard shows three real submissions and two paused, not five submitted',()=>{const apps=[confirmed('a'),confirmed('b'),confirmed('c'),{id:'fake',status:'APPLIED',appliedAt:now}];const runs=[{applicationId:'d',stage:'REVIEW_REQUIRED',updatedAt:now},{applicationId:'e',stage:'REVIEW_REQUIRED',updatedAt:now},{applicationId:'a',stage:'REVIEW_REQUIRED',updatedAt:now}];assert.deepEqual(dailyProgress(apps,runs,5,now),{day:'2026-11-17',limit:5,submitted:3,paused:2,queued:0,running:0,unconfirmed:0});});
+test('latest task state wins and India midnight resets daily counts',()=>{const runs=[{applicationId:'a',stage:'REVIEW_REQUIRED',updatedAt:'2026-11-17T09:00:00Z'},{applicationId:'a',stage:'OPENED',updatedAt:now},{applicationId:'b',stage:'UNKNOWN',updatedAt:now}];const result=dailyProgress([],runs,5,now);assert.equal(result.paused,0);assert.equal(result.running,1);assert.equal(result.unconfirmed,1);assert.equal(dailyProgress([confirmed('a')],runs,5,new Date('2026-11-17T18:30:00Z')).submitted,0);});

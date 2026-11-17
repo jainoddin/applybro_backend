@@ -1,6 +1,15 @@
 import { createCipheriv,createDecipheriv,createHash,randomBytes } from 'crypto';
 import { isIP } from 'net';
 export const terminalStates=new Set(['CONFIRMED','FAILED','CANCELLED','SKIPPED','CONNECTED','BLOCKED']);
+export function localDashboardActions(env:Record<string,string|undefined>=process.env){
+ if(env.CLOUD_AGENT_LOCAL_DASHBOARD_ACTIONS!=='true')return false;
+ try{const u=new URL(env.CLOUD_AGENT_PUBLIC_ORIGIN||'');return u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname);}catch{return false;}
+}
+export function exactExperienceYears(value:string):number|null{
+ const m=/^\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)(?:\s+(\d{1,2})\s*months?)?\s*$/i.exec(value||'');
+ if(!m||Number(m[2]||0)>11)return null;
+ return Number(m[1])+Number(m[2]||0)/12;
+}
 export function localPilotEnabled(env:Record<string,string|undefined>=process.env){
  if(env.CLOUD_AGENT_LOCAL_PILOT!=='true')return false;
  try{const u=new URL(env.CLOUD_AGENT_PUBLIC_ORIGIN||'');return u.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(u.hostname);}catch{return false;}

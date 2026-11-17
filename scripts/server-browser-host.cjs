@@ -1,32 +1,51 @@
 // Temporary public health/result host; browser control is never exposed.
 const http = require('node:http');
 const { spawn } = require('node:child_process');
-const { LoginRelay, authenticate } = require('./naukri-login-relay.cjs');
+const {createHmac}=require('node:crypto');
+const { LoginRelay, authenticate, backendOrigin } = require('./naukri-login-relay.cjs');
 const relay = new LoginRelay();
+const {LinkedInLoginRelay}=require('./linkedin-login-relay.cjs');
+const linkedin=new LinkedInLoginRelay();
+const {connectLogin}=require('./connect-login.cjs');
+const {BackendSessionStore,requestContext}=require('./backend-session-store.cjs');
+const persistent=process.env.PRIVATE_BROWSER_SESSION_STORAGE==='backend';
+if(persistent){relay.store=new BackendSessionStore('NAUKRI',{origin:backendOrigin});linkedin.store=new BackendSessionStore('LINKEDIN',{origin:backendOrigin});}
 let result = { status: 'STARTING', loginAttempted: false, applicationsSubmitted: 0 };
 const server = http.createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  if (req.method === 'POST' && /^\/login\/(start|refresh|fill|click|close|job-start|job-status|job-answer|job-stop)$/.test(req.url)) {
+  if(req.method==='POST'&&/^\/linkedin-login\/(connect|start|refresh|fill|click|close)$/.test(req.url)){
+    try{const owner=await authenticate(req);requestContext.enterWith({owner,authorization:req.headers.authorization});let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>50000)throw Object.assign(Error('Request too large.'),{status:413});}let body;try{body=JSON.parse(raw||'{}');}catch{throw Object.assign(Error('Invalid request.'),{status:400});}
+      const action=req.url.split('/').pop();if(linkedin.sessions.has(owner)&&typeof body.preview==='boolean')linkedin.sessions.get(owner).previewEnabled=body.preview;const data=action==='connect'?await connectLogin(linkedin,owner,{preview:body.preview!==false}):action==='start'?await linkedin.start(owner,{preview:body.preview!==false}):action==='refresh'?await linkedin.refresh(owner):action==='fill'?await linkedin.fill(owner,body):action==='click'?await linkedin.click(owner,body):await linkedin.close(owner,{forget:body.forget===true});return res.end(JSON.stringify(data));
+    }catch(e){res.writeHead(e.status||503);return res.end(JSON.stringify({message:e.status?e.message:'Private LinkedIn action could not complete. Refresh its fields.'}));}
+  }
+  if (req.method === 'POST' && /^\/login\/(connect|start|refresh|fill|click|close|job-start|job-status|job-answer|job-stop)$/.test(req.url)) {
     try {
       const owner = await authenticate(req);
+      requestContext.enterWith({owner,authorization:req.headers.authorization});
       let text = ''; for await (const chunk of req) { text += chunk; if (Buffer.byteLength(text) > 50000) throw Object.assign(new Error('Request too large.'), { status: 413 }); }
       let body; try { body = JSON.parse(text || '{}'); } catch { throw Object.assign(new Error('Invalid request.'), { status: 400 }); }
       const action = req.url.split('/').pop();
       const loadMaterial = async () => {
-        const response = await fetch('https://applybro-backend.onrender.com/profile/browser-material', { headers: { Authorization: req.headers.authorization }, signal: AbortSignal.timeout(20000), redirect: 'error' });
+        const response = await fetch(backendOrigin()+'/profile/browser-material', { headers: { Authorization: req.headers.authorization }, signal: AbortSignal.timeout(20000), redirect: 'error' });
         if (!response.ok) throw Object.assign(new Error('Your saved profile/resume could not be loaded. Check Get Started.'), { status: 409 });
         return response.json();
       };
-      const data = action === 'job-start' ? await relay.jobStart(owner, body, loadMaterial) : action === 'job-status' ? await relay.jobStatus(owner) : action === 'job-answer' ? await relay.jobAnswer(owner, body) : action === 'job-stop' ? await relay.jobStop(owner) : action === 'start' ? await relay.start(owner) : action === 'refresh' ? await relay.refresh(owner) : action === 'fill' ? await relay.fill(owner, body) : action === 'click' ? await relay.click(owner, body) : await relay.close(owner);
+      const onConfirmed=async receipt=>{const key=process.env.PRIVATE_BROWSER_CALLBACK_KEY;if(!/^[a-f0-9]{64}$/i.test(key||''))throw Error('Receipt recording key is unavailable.');const payload=JSON.stringify({...receipt,userId:owner,signedAt:Date.now()}),signature='sha256='+createHmac('sha256',key).update(payload).digest('hex');const response=await fetch(backendOrigin()+'/profile/browser-receipt',{method:'POST',headers:{Authorization:req.headers.authorization,'Content-Type':'application/json','x-applybro-browser-signature':signature},body:payload,signal:AbortSignal.timeout(15000),redirect:'error'});if(!response.ok)throw Error('Receipt storage unavailable.');return response.json();};
+      const otpCall=async(action,payload)=>{const key=process.env.PRIVATE_BROWSER_CALLBACK_KEY;if(!/^[a-f0-9]{64}$/i.test(key||''))throw Error('Private OTP channel is unavailable.');const raw=JSON.stringify({...payload,userId:owner,signedAt:Date.now()}),signature='sha256='+createHmac('sha256',key).update(raw).digest('hex');const response=await fetch(backendOrigin()+'/agent/whatsapp/browser-otp/'+action,{method:'POST',headers:{Authorization:req.headers.authorization,'Content-Type':'application/json','x-applybro-browser-signature':signature},body:raw,signal:AbortSignal.timeout(15000),redirect:'error'});if(!response.ok)throw Error('WhatsApp OTP channel is unavailable.');return response.json();};
+      const otpBridge={ask:payload=>otpCall('ask',payload),poll:(id,sessionId)=>otpCall('poll',{id,sessionId}),cancel:(id,sessionId)=>otpCall('cancel',{id,sessionId})};
+      if(relay.sessions.has(owner))relay.sessions.get(owner).otpBridge=otpBridge;
+      if(relay.sessions.has(owner)&&typeof body.preview==='boolean')relay.sessions.get(owner).previewEnabled=body.preview;
+      if(action==='connect')return res.end(JSON.stringify(await connectLogin(relay,owner,{otpBridge,preview:body.preview!==false})));
+      const data = action === 'job-start' ? await relay.jobStart(owner, body, loadMaterial,onConfirmed) : action === 'job-status' ? await relay.jobStatus(owner,onConfirmed) : action === 'job-answer' ? await relay.jobAnswer(owner, body) : action === 'job-stop' ? await relay.jobStop(owner) : action === 'start' ? await relay.start(owner,{otpBridge}) : action === 'refresh' ? await relay.refresh(owner) : action === 'fill' ? await relay.fill(owner, body) : action === 'click' ? await relay.click(owner, body) : await relay.close(owner,{forget:body.forget===true});
       return res.end(JSON.stringify(data));
     } catch (e) { res.writeHead(e.status || 503); return res.end(JSON.stringify({ message: e.status ? e.message : 'Private login action could not complete. Refresh the current Naukri fields.' })); }
   }
   if (req.method !== 'GET' || !['/', '/health', '/result'].includes(req.url)) {
     res.writeHead(404); return res.end(JSON.stringify({ message: 'Not found' }));
   }
-  res.end(JSON.stringify(req.url === '/health' ? { status: 'ok', purpose: 'read-only-browser-probe' } : result));
+  res.end(JSON.stringify(req.url === '/health' ? { status: 'ok', purpose: 'private-browser-helper',sessionPersistenceConfigured:!!relay.store.key,sessionStorage:persistent?'backend':'local-files',linkedinLogin:true,otpBridge:true } : result));
 });
 server.listen(Number(process.env.PORT || 10000), '0.0.0.0', () => {
   console.log('Probe health server listening; starting one read-only browser access test.');
@@ -58,5 +77,5 @@ server.listen(Number(process.env.PORT || 10000), '0.0.0.0', () => {
   };
   child.on('error', () => failed('RUNTIME_FAILED'));
   child.on('exit', code => failed(code === 124 || code === 137 ? 'BROWSER_TIMEOUT' : 'RUNTIME_FAILED'));
-  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => { child.kill('SIGTERM'); await relay.dispose(); server.close(() => process.exit(0)); });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => { child.kill('SIGTERM'); await linkedin.dispose();await relay.dispose(); server.close(() => process.exit(0)); });
 });

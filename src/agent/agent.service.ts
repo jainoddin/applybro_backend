@@ -1,9 +1,10 @@
+import { hasSubmissionEvidence } from '../jobs/application-evidence';
 import { BadRequestException,Injectable,NotFoundException,ServiceUnavailableException } from '@nestjs/common';
 import { randomBytes,randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { JobsService } from '../jobs/jobs.service';
 import { minimumExperience } from '../jobs/skill-match';
-import { approvedUrl,factsFor,seal,tokenHash,unseal,localPilotEnabled } from './agent-policy';
+import { approvedUrl,factsFor,seal,tokenHash,unseal,localPilotEnabled,localDashboardActions,exactExperienceYears } from './agent-policy';
 
 @Injectable()
 export class CloudAgentService {
@@ -11,7 +12,7 @@ export class CloudAgentService {
  async config(){
   const issues=[];if(process.env.CLOUD_AGENT_ENABLED!=='true')issues.push('Server-side agent is not enabled by the operator.');
   const localPilot=localPilotEnabled();
-  if((!process.env.RESEND_API_KEY||!process.env.CLOUD_AGENT_EMAIL_FROM)&&!localPilot)issues.push('Verification email sender is not configured.');
+  if((!process.env.RESEND_API_KEY||!process.env.CLOUD_AGENT_EMAIL_FROM)&&!localPilot&&!localDashboardActions())issues.push('Verification email sender is not configured.');
   if(!/^[a-f0-9]{64}$/i.test(process.env.CLOUD_AGENT_ENCRYPTION_KEY||''))issues.push('Private session encryption is not configured.');
   if(!process.env.CLOUD_AGENT_MODEL||!(process.env.CLOUD_AGENT_API_KEY||process.env.GEMINI_API_KEYS))issues.push('Vision model configuration is missing.');
   try{const u=new URL(process.env.CLOUD_AGENT_PUBLIC_ORIGIN||'');if(u.protocol!=='https:'&&!(['localhost','127.0.0.1'].includes(u.hostname)&&u.protocol==='http:'))throw Error();}catch{issues.push('A valid HTTPS website origin is required for action links.');}
@@ -21,7 +22,7 @@ export class CloudAgentService {
   if(!workerOnline)issues.push('Hosted browser worker is offline.');
   if(!heart[0]?.modelReady)issues.push('AI model connection has not passed the worker startup check.');
   const connectionReady=process.env.CLOUD_AGENT_ENABLED==='true'&&/^[a-f0-9]{64}$/i.test(process.env.CLOUD_AGENT_ENCRYPTION_KEY||'')&&workerOnline&&approvedUrl('https://www.naukri.com/mnjuser/profile');
-  return {ready:!issues.length,issues,workerOnline,allowedHosts:hosts,emailConfigured:!!(process.env.RESEND_API_KEY&&process.env.CLOUD_AGENT_EMAIL_FROM),handoffMinutes:5,localPilot,connectionReady};
+  return {ready:!issues.length,issues,workerOnline,allowedHosts:hosts,emailConfigured:!!(process.env.RESEND_API_KEY&&process.env.CLOUD_AGENT_EMAIL_FROM),handoffMinutes:5,localPilot,localDashboardActions:localDashboardActions(),connectionReady};
  }
  async owned(userId:string,id:string){const rows:any[]=await this.db.$queryRaw`SELECT * FROM "AgentRun" WHERE "id"=${id} AND "userId"=${userId}`;if(!rows[0])throw new NotFoundException('Agent task not found.');return rows[0];}
  async status(userId:string){
@@ -36,7 +37,7 @@ export class CloudAgentService {
   const connection:any[]=await this.db.$queryRaw`SELECT "id","state","reason" FROM "AgentRun" WHERE "userId"=${userId} AND "kind"='CONNECT' ORDER BY "createdAt" DESC LIMIT 1`;
   const latest=connection[0],savedAt=sessions[0]?.naukriCheckedAt||null;
   const naukri={status:latest&&['QUEUED','RUNNING','WAITING_USER','BLOCKED','FAILED'].includes(latest.state)?latest.state:savedAt?'SESSION_SAVED':'NOT_CONNECTED',savedAt,runId:latest?.id||null,reason:latest?.reason||''};
-  return {config:await this.config(),enabled:preferences[0]?.enabled===true,runs,notices,candidateJobs,events,naukri};
+  return {config:await this.config(),enabled:preferences[0]?.enabled===true,runs,notices,candidateJobs,events,naukri,today:matches.today};
  }
  async connectNaukri(userId:string,body:any){
   if(body?.consent!==true)throw new BadRequestException('Authorize saving this private browser session first.');
@@ -96,8 +97,8 @@ export class CloudAgentService {
   if(!job||job.status==='APPLIED'||!meta?.matchAssessed||job.matchScore<user.minMatchScore)throw new BadRequestException('This job needs review or does not meet the saved match threshold.');
   if(!approvedUrl(meta.url))throw new BadRequestException('This employer site has not been enabled for the hosted agent.');
   const minimum=typeof meta.minimumYears==='number'?meta.minimumYears:minimumExperience('');
-  const exact=String(user.experience||'').match(/^\s*(\d+(?:\.\d+)?)\s*(years?|yrs?)?\s*$/i);
-  if(minimum>0&&(!exact||Number(exact[1])<minimum))throw new BadRequestException('Confirm the exact experience required by this employer before auto-applying.');
+  const exact=exactExperienceYears(String(user.experience||''));
+  if(minimum>0&&(exact===null||exact<minimum))throw new BadRequestException('Confirm the exact experience required by this employer before auto-applying.');
   const companion:any[]=await this.db.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${userId} AND "applicationId"=${applicationId} AND "kind"='APPLY' AND "stage" IN ('CREATED','OPENED','REVIEW_REQUIRED','SUBMITTING','UNKNOWN') LIMIT 1`;
   if(companion.length)throw new BadRequestException('An existing companion application must be resolved or cancelled first.');
   const id=randomUUID();try{await this.db.$executeRaw`INSERT INTO "AgentRun"("id","userId","applicationId","resumeId","url") VALUES (${id},${userId},${applicationId},${resumeId},${meta.url})`;}catch(e){if(e?.meta?.code==='23505')throw new BadRequestException('This application already has a hosted task.');throw e;}
@@ -109,10 +110,11 @@ export class CloudAgentService {
   const pending:any[]=await this.db.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "state" IN ('QUEUED','RUNNING','WAITING_USER','SUBMITTING','UNKNOWN')`;
   const today=new Date(new Date(Date.now()+19800000).toISOString().slice(0,10)+'T00:00:00+05:30');
   const sent=await this.db.jobApplication.findMany({where:{userId,status:'APPLIED',appliedAt:{gte:today}}});
-  const confirmed=sent.filter(a=>{const m:any=a.matchReasons;return m?.providerReceipt||m?.browserConfirmation||m?.agentConfirmation;}).length;
+  const confirmed=sent.filter(hasSubmissionEvidence).length;
   const budget=Math.min(localPilotEnabled()?1:Infinity,Math.max(0,user.dailyApplyLimit-pending.length-confirmed));
-  const queued=[],skipped=[];for(const job of data.jobs.filter(x=>x.status!=='APPLIED').slice(0,50)){if(queued.length>=budget)break;try{queued.push(await this.enqueue(userId,job.id));}catch(e){skipped.push({jobId:job.id,reason:e.message});}}
-  return {queued,skipped,applied:0};
+  const candidates=data.jobs.filter(x=>x.status!=='APPLIED'&&x.matchAssessed&&x.matchScore>=user.minMatchScore&&approvedUrl(x.applicationUrl));
+  const queued=[],skipped=[];for(const job of candidates.slice(0,50)){if(queued.length>=budget)break;try{queued.push(await this.enqueue(userId,job.id));}catch(e){skipped.push({jobId:job.id,reason:e.message});}}
+  return {queued,skipped,applied:0,eligible:candidates.length,dailyLimit:user.dailyApplyLimit,message:queued.length?`${queued.length} application tasks queued; submissions count only after employer confirmation.`:candidates.length?'No new tasks queued. Check existing tasks and daily limit.':'No supported jobs meet your saved match threshold. Automation remains enabled and will check again.'};
  }
  async queueOne(userId:string,applicationId:unknown){
   if(typeof applicationId!=='string'||!applicationId||applicationId.length>128)throw new BadRequestException('Choose a valid saved job.');
@@ -165,7 +167,7 @@ export class CloudAgentService {
    if(counterpart.length)throw Error('A companion task for this job must be resolved before hosted submission.');
    const from=new Date(new Date(Date.now()+19800000).toISOString().slice(0,10)+'T00:00:00+05:30');
    const sent=await tx.jobApplication.findMany({where:{userId:run.userId,status:'APPLIED',appliedAt:{gte:from}}});
-   const count=sent.filter(a=>{const m:any=a.matchReasons;return m?.providerReceipt||m?.browserConfirmation||m?.agentConfirmation;}).length;
+   const count=sent.filter(hasSubmissionEvidence).length;
    const pending:any[]=await tx.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "userId"=${run.userId} AND "state" IN ('SUBMITTING','UNKNOWN') AND "submitReservedAt">=${from}`;
    const browser:any[]=await tx.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${run.userId} AND "kind"='APPLY' AND "stage" IN ('SUBMITTING','UNKNOWN') AND "updatedAt">=${from}`;
    if(count+pending.length+browser.length>=user.dailyApplyLimit)throw Error('Daily submission limit reached.');

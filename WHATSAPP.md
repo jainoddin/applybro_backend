@@ -47,3 +47,30 @@ Optional answer memory: apply `prisma/answer-memory.sql` after `prisma/whatsapp.
 The in-memory `/naukri-test` pilot still does not consume hosted answer memory. No live send or cross-job reuse is enabled simply by adding an access token; webhook, verified contact, approved template, tables, consent and online hosted worker are still required.
 
 Validation: `npm run build`, then `node --test scripts/whatsapp.test.cjs`. Live acceptance requires configured Meta credentials, approved template, development database schema, verified recipient, an online hosted worker and a real inbound reply. No live message or application confirmation is claimed by fixture tests.
+## Daily application progress
+
+The dashboard obtains today's (Asia/Kolkata) submitted, paused, queued, running,
+and uncertain counts from the backend. Only employer-confirmed receipts count
+as submitted. A waiting question is never counted as a successful application.
+
+The hosted worker waits up to five minutes for a verified, quoted WhatsApp reply
+to an unambiguous employer question. It validates the current URL and field before
+entering the answer. Saved answer reuse remains opt-in and scoped to the user.
+If no answer arrives, the task stays paused and its browser is closed; the worker
+releases its lease and continues other queued applications. Reopen an expired task
+to request a fresh answer. CAPTCHA is completed in the portal by the user.
+
+Live WhatsApp requires enabled configuration, an approved template, a verified
+recipient, and a working published webhook. Unavailable notification configuration
+is logged as WHATSAPP_UNAVAILABLE, never as a delivered message. A local single-job
+pilot remains limited to one application; this change does not enable bulk submission
+or deploy/restart a hosted worker.
+
+Local automatic processing can be started with `npm.cmd run agent:local` after
+`.env.worker-local` is configured. This ignored file scopes the worker to the
+requested account and uses the existing Chrome installation. It does not provision
+a server or keep a powered-off laptop running. The local dashboard fallback for
+missing email is explicit and accepts loopback origins only; production notification
+requirements are preserved. Experience ranges are not treated as exact years.
+Auto-apply permission can remain enabled with zero eligible jobs; queue responses
+explain this instead of marking records submitted or lowering the match threshold.

@@ -8,12 +8,15 @@ const {observe,execute,plan,allowNetwork,submitLike,element,targetAt}=require('.
 const {claim,heartbeat,recover}=require('./cloud-queue.cjs');
 const {reviewWindow,waitForReview}=require('./agent-pacing.cjs');
 const {profileState,syncResume,isNaukriJob,openProfile}=require('./naukri-flow.cjs');
+const {WhatsAppService}=require('../dist/agent/whatsapp.service');
+const {answerableField,matchingQuestionField}=require('../dist/agent/whatsapp-policy');
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const owner=randomUUID();let stopping=false;
 process.on('SIGTERM',()=>{stopping=true;});process.on('SIGINT',()=>{stopping=true;});
 async function main(){
  if(process.env.CLOUD_AGENT_ENABLED!=='true'){console.log('Hosted agent disabled. Configure it before starting the worker.');return;}
  const localPilot=localPilotEnabled();
+ const scopedUser=process.env.CLOUD_AGENT_USER_ID||null;
  if(process.env.CLOUD_AGENT_LOCAL_PILOT==='true'&&!localPilot)throw Error('Local pilot requires a loopback HTTP website origin.');
  agentKey();
  const app=await NestFactory.createApplicationContext(AppModule,{logger:['error','warn']});const db=app.get(PrismaService),service=app.get(CloudAgentService);
@@ -37,11 +40,46 @@ async function main(){
    observation=await observe(page);const image=await privateImage().catch(()=>null);
    if(image)await db.$executeRaw`UPDATE "AgentRun" SET "screen"=${seal({image:image.toString('base64')})},"url"=${new URL(page.url()).origin+new URL(page.url()).pathname},"fields"=${JSON.stringify(observation.fields.filter(x=>['INPUT','TEXTAREA','SELECT'].includes(x.tag)).map(x=>({id:x.id,label:x.label,type:x.type})))}::jsonb,"screenVersion"="screenVersion"+1,"updatedAt"=NOW() WHERE "id"=${initial.id}`;
   };
-  async function waitForUser(reason,preserveGrant=false){
+  async function waitForUser(reason,preserveGrant=false,askAnswer=false,questionElement){
+   if(askAnswer&&!connectionOnly){
+    const before=await observe(page),url=page.url(),fields=before.fields.filter(f=>answerableField(f)&&!f.filled&&(Number.isInteger(questionElement)?f.id===questionElement:true));
+    if(!before.challenge&&fields.length===1){try{
+     const memory=await app.get(WhatsAppService).recalled(initial.userId,fields[0],{url,company:expectedJob.companyName,title:expectedJob.jobTitle});
+     if(memory){const fresh=await observe(page),target=!fresh.challenge&&matchingQuestionField({url,field:fields[0]},fresh.fields,page.url());
+      if(target){const input=element(page,target.id,target.frame);await input.fill(memory.value);
+       if(await input.evaluate(el=>typeof el.checkValidity!=='function'||el.checkValidity())){privateFields.push({id:target.id,frame:target.frame});await event(initial.id,'SAVED_ANSWER','Used your saved answer for this matching question. No WhatsApp message sent.');return true;}
+       await input.fill('');await app.get(WhatsAppService).deleteAnswer(initial.userId,memory.key);
+      }
+     }
+    }catch{await event(initial.id,'ANSWER_MEMORY_UNAVAILABLE','Saved answer could not be used; requesting your input.');}}
+   }
    await saveSession();if(preserveGrant)await update(initial.id,'WAITING_USER',reason);else await service.pause(initial,reason);await screen();let since=Date.now();
+   let questionId=null;
+   if(askAnswer&&!observation.challenge){
+    const fields=observation.fields.filter(f=>answerableField(f)&&!f.filled&&(Number.isInteger(questionElement)?f.id===questionElement:true));
+    // Do not infer which answer is missing when the planner has not identified one unambiguous field.
+    if(fields.length===1)try{questionId=await app.get(WhatsAppService).ask({...initial,state:'WAITING_USER'},fields[0],page.url(),{company:expectedJob?.companyName,title:expectedJob?.jobTitle});if(!questionId)await event(initial.id,'WHATSAPP_UNAVAILABLE','WhatsApp is not configured or the recipient is not verified. This application is paused; answer in ApplyBro.');}catch{await event(initial.id,'WHATSAPP_UNAVAILABLE','WhatsApp could not be queued. Answer this question in ApplyBro.');}
+   }
    while(!stopping){
     const r=await get(initial.id);if(!r||terminalStates.has(r.state)||r.leaseOwner!==owner)return false;
     if(r.state==='SUBMITTING'||r.state==='UNKNOWN')return true;
+    if(questionId){
+     const replies=await db.$queryRaw`SELECT * FROM "WhatsAppQuestion" WHERE "id"=${questionId} AND "runId"=${r.id} AND "state"='ANSWERED' AND "expiresAt">NOW()`;
+     if(replies[0]){
+      const reply=replies[0],saved=unseal(reply.encrypted);observation=await observe(page);
+      const target=!observation.challenge&&matchingQuestionField(saved,observation.fields,page.url());
+      const consumed=await db.$executeRaw`UPDATE "WhatsAppQuestion" SET "state"=${target?'CONSUMED':'STALE'},"consumedAt"=NOW() WHERE "id"=${questionId} AND "state"='ANSWERED' AND "expiresAt">NOW()`;
+      if(consumed&&target){try{
+       const value=unseal(reply.answer).value,input=element(page,target.id,target.frame);await input.fill(value);
+       if(!await input.evaluate(el=>typeof el.checkValidity!=='function'||el.checkValidity())){await input.fill('');throw Error('Answer does not match the employer field format.');}
+       privateFields.push({id:target.id,frame:target.frame});
+       try{await app.get(WhatsAppService).remember(initial.userId,target,value,saved.context||{url:page.url(),company:expectedJob?.companyName,title:expectedJob?.jobTitle});}catch{await event(r.id,'ANSWER_MEMORY_UNAVAILABLE','Your answer was entered, but could not be saved for future applications.');}
+       await event(r.id,'WHATSAPP_ANSWER','User answer entered in the matching employer field. Submission is not yet confirmed.');
+       history=[];await update(r.id,'RUNNING','Resuming after the user answered on WhatsApp.');return true;
+      }catch{await event(r.id,'WHATSAPP_STALE','Could not enter the answer. Review the current employer form.');}}
+      questionId=null;
+     }
+    }
     const commands=await db.$queryRaw`DELETE FROM "AgentCommand" WHERE "id" IN (SELECT "id" FROM "AgentCommand" WHERE "runId"=${initial.id} ORDER BY "createdAt" LIMIT 1) RETURNING *`;
     if(commands[0]){
      const command=commands[0];if(command.expiresAt<new Date()||command.screenVersion!==r.screenVersion){await event(r.id,'CONTROL_EXPIRED','The page changed; user action was discarded.');}
@@ -62,7 +100,7 @@ async function main(){
       }catch{await event(r.id,'CONTROL_ERROR','User action could not be completed. Refresh the private browser and retry.');}
      }
     }else{if(Date.now()-lastShot>2500){await screen();lastShot=Date.now();}await sleep(500);}
-    if(Date.now()-since>300000){await saveSession();await event(r.id,'WAITING','No user action within five minutes; browser saved and closed. Reopen the task to reconnect.');return false;}
+    if(Date.now()-since>300000){await saveSession();await event(r.id,'WAITING','No user action within five minutes. This application stays paused; other queued jobs can continue. Reopen the task to resume with a fresh question if needed.');return false;}
    }
    return false;
   }
@@ -129,7 +167,7 @@ async function main(){
     const action=await plan(observation,image,facts,history,{title:expectedJob.jobTitle,company:expectedJob.companyName,url:initial.url});
     if((await get(initial.id))?.leaseOwner!==owner)break;
     history.push({kind:action.kind,element:action.element,reason:String(action.reason||'').slice(0,200)});
-    if(action.kind==='ASK_USER'){if(!await waitForUser(String(action.reason||'An employer question requires a verified answer.')))break;continue;}
+    if(action.kind==='ASK_USER'){if(!await waitForUser(String(action.reason||'An employer question requires a verified answer.'),false,true,action.element))break;continue;}
     if(action.kind==='SKIP'){await update(r.id,'SKIPPED',String(action.reason||'Job not suitable.'));break;}
     if(action.kind==='SUBMIT'&&Date.now()<reviewUntil){
      await update(r.id,'RUNNING','Reviewing application before submission.');
@@ -165,10 +203,15 @@ async function main(){
   await db.$executeRaw`INSERT INTO "AgentHeartbeat"("id","modelReady") VALUES (${owner},${modelReady}) ON CONFLICT ("id") DO UPDATE SET "modelReady"=EXCLUDED."modelReady","updatedAt"=NOW()`;
   await recover(db);
   await db.$executeRaw`DELETE FROM "AgentCommand" WHERE "expiresAt"<NOW()`;
+  if(app.get(WhatsAppService).configured()){
+   await db.$executeRaw`UPDATE "WhatsAppQuestion" SET "state"='EXPIRED',"encrypted"='',"answer"=NULL WHERE "expiresAt"<NOW() AND "state" NOT IN ('CONSUMED','CANCELLED','STALE','EXPIRED')`;
+   await db.$executeRaw`DELETE FROM "WhatsAppInbound" WHERE "createdAt"<NOW()-INTERVAL '7 days'`;
+   await db.$executeRaw`UPDATE "WhatsAppContact" SET "pairHash"=NULL,"pairExpires"=NULL WHERE "pairExpires"<NOW()`;
+  }
   await db.$executeRaw`UPDATE "AgentNotice" SET "state"='EXPIRED',"encrypted"='' WHERE "state"='PENDING' AND "expiresAt"<NOW()`;
-  if(tick++%15===0){await notices();if(modelReady&&!localPilot){const prefs=await db.$queryRaw`UPDATE "AgentPreference" SET "nextRunAt"=NOW()+INTERVAL '6 hours' WHERE "enabled"=TRUE AND "nextRunAt"<=NOW() RETURNING "userId"`;for(const pref of prefs)try{await service.queueMatches(pref.userId);}catch{}}}
+  if(tick++%15===0){await notices();if(modelReady&&!localPilot){const prefs=await db.$queryRaw`UPDATE "AgentPreference" SET "nextRunAt"=NOW()+INTERVAL '6 hours' WHERE "enabled"=TRUE AND "nextRunAt"<=NOW() AND (${scopedUser}::TEXT IS NULL OR "userId"=${scopedUser}) RETURNING "userId"`;for(const pref of prefs)try{await service.queueMatches(pref.userId);}catch{}}}
   while(active.size<(localPilot?1:Math.min(4,Math.max(1,Number(process.env.CLOUD_AGENT_CONCURRENCY)||1)))&&(!localPilot||!pilotClaimed)){
-   const rows=await claim(db,owner,!modelReady);
+   const rows=await claim(db,owner,!modelReady,scopedUser);
    if(!rows[0])break;const application=rows[0].kind!=='CONNECT';if(application)pilotClaimed=true;const promise=run(rows[0]).catch(()=>{});active.add(promise);promise.finally(()=>{active.delete(promise);if(localPilot&&application)stopping=true;});
   }
   await sleep(1000);

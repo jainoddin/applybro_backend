@@ -14,8 +14,9 @@
     "agent:worker": "node scripts/cloud-worker.cjs",
     "agent:check": "node scripts/agent-preflight.cjs",
     "agent:connection-smoke": "node scripts/naukri-connection-smoke.cjs",
-    "agent:test": "node --test scripts/cloud-agent.test.cjs scripts/cloud-browser.test.cjs scripts/agent-pacing.test.cjs scripts/naukri-flow.test.cjs scripts/naukri-workflow.test.cjs scripts/naukri-discovery.test.cjs",
-    "agent:smoke": "node scripts/cloud-agent-smoke.cjs"
+    "agent:test": "node --test scripts/cloud-agent.test.cjs scripts/cloud-browser.test.cjs scripts/agent-pacing.test.cjs scripts/naukri-flow.test.cjs scripts/naukri-workflow.test.cjs scripts/naukri-discovery.test.cjs scripts/company-navigation.test.cjs scripts/browser-receipt.test.cjs",
+    "agent:smoke": "node scripts/cloud-agent-smoke.cjs",
+    "agent:local": "node --env-file=.env --env-file=.env.worker-local scripts/cloud-worker.cjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1166.0",
