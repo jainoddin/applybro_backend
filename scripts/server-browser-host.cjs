@@ -47,12 +47,16 @@ const server = http.createServer(async (req, res) => {
   }
   res.end(JSON.stringify(req.url === '/health' ? { status: 'ok', purpose: 'private-browser-helper',sessionPersistenceConfigured:!!relay.store.key,sessionStorage:persistent?'backend':'local-files',linkedinLogin:true,otpBridge:true } : result));
 });
+let probeChild=null;
+for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{probeChild?.kill('SIGTERM');await linkedin.dispose();await relay.dispose();server.close(()=>process.exit(0));});
 server.listen(Number(process.env.PORT || 10000), '0.0.0.0', () => {
-  console.log('Probe health server listening; starting one read-only browser access test.');
+  if(process.env.PRIVATE_BROWSER_STARTUP_PROBE!=='true'){result={status:'ON_DEMAND',loginAttempted:false,applicationsSubmitted:0};console.log('Browser helper ready; browsers start only for authenticated sign-in requests.');return;}
+  console.log('Browser helper ready; explicitly enabled read-only startup probe.');
   // A bounded child isolates Xvfb/browser startup from HTTP readiness.
   const child = process.platform === 'win32'
     ? spawn(process.execPath, ['scripts/server-browser-probe.cjs'], { stdio: ['ignore', 'pipe', 'pipe'] })
     : spawn('timeout', ['--signal=TERM', '--kill-after=5s', '45s', 'xvfb-run', '-a', 'node', 'scripts/server-browser-probe.cjs'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  probeChild=child;
   let buffer = '', reported = false;
   child.stdout.on('data', chunk => {
     buffer += chunk.toString();
@@ -77,5 +81,5 @@ server.listen(Number(process.env.PORT || 10000), '0.0.0.0', () => {
   };
   child.on('error', () => failed('RUNTIME_FAILED'));
   child.on('exit', code => failed(code === 124 || code === 137 ? 'BROWSER_TIMEOUT' : 'RUNTIME_FAILED'));
-  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => { child.kill('SIGTERM'); await linkedin.dispose();await relay.dispose(); server.close(() => process.exit(0)); });
+
 });
