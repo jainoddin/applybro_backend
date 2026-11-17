@@ -11,3 +11,9 @@ test('A server denial prevents repeated browser launches and never claims a save
  const relay=new LinkedInLoginRelay();relay.deniedUntil=Date.now()+60000;relay.launch=()=>assert.fail('Denied server must not open another browser');
  try{for(const owner of ['owner-a','owner-b']){const view=await relay.start(owner,{preview:false});assert.equal(view.status,'BLOCKED');assert.equal(view.signedIn,false);assert.equal(view.sessionSaved,false);assert.deepEqual(view.fields,[]);assert.ok(view.retryAfterSeconds>0);assert.equal(relay.sessions.size,0);}}finally{await relay.dispose();}
 });
+
+test('Rejected page preview is private, expires, and never restarts the browser',async()=>{
+ const relay=new LinkedInLoginRelay();relay.launch=()=>assert.fail('Preview must not launch a browser');
+ relay.rejectedPreviews.set('owner',{preview:'fixture-image',previewAt:Date.now(),expiresAt:Date.now()+60000,httpStatus:403});
+ try{const view=await relay.refresh('owner',{preview:true});assert.equal(view.preview,'fixture-image');assert.equal(view.previewHistorical,true);assert.equal(view.signedIn,false);assert.equal((await relay.refresh('owner',{preview:false})).preview,undefined);assert.deepEqual(relay.rejectedPreview('other'),{});relay.rejectedPreviews.get('owner').expiresAt=0;assert.deepEqual(relay.rejectedPreview('owner'),{});}finally{await relay.dispose();}
+});
