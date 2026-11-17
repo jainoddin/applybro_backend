@@ -8,6 +8,7 @@ COPY scripts/server-browser-host.cjs ./scripts/server-browser-host.cjs
 COPY scripts/browser-display.cjs ./scripts/browser-display.cjs
 COPY scripts/naukri-login-relay.cjs ./scripts/naukri-login-relay.cjs
 COPY scripts/linkedin-login-relay.cjs ./scripts/linkedin-login-relay.cjs
+COPY scripts/remote-login.cjs ./scripts/remote-login.cjs
 COPY scripts/connect-login.cjs ./scripts/connect-login.cjs
 COPY scripts/backend-session-store.cjs ./scripts/backend-session-store.cjs
 COPY scripts/public-https-guard.cjs ./scripts/public-https-guard.cjs

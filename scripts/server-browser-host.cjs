@@ -7,6 +7,8 @@ const relay = new LoginRelay();
 const {LinkedInLoginRelay}=require('./linkedin-login-relay.cjs');
 const linkedin=new LinkedInLoginRelay();
 const {connectLogin,closePendingLogin}=require('./connect-login.cjs');
+const {RemoteLogin}=require('./remote-login.cjs');
+const remoteLinkedin=new RemoteLogin(linkedin),remoteNaukri=new RemoteLogin(relay);
 const {BackendSessionStore,requestContext}=require('./backend-session-store.cjs');
 const persistent=process.env.PRIVATE_BROWSER_SESSION_STORAGE==='backend';
 if(persistent){relay.store=new BackendSessionStore('NAUKRI',{origin:backendOrigin});linkedin.store=new BackendSessionStore('LINKEDIN',{origin:backendOrigin});}
@@ -15,18 +17,24 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  if(req.method==='POST'&&/^\/linkedin-login\/(connect|start|refresh|preview|fill|click|close)$/.test(req.url)){
+  if(req.method==='POST'&&/^\/linkedin-login\/(remote-connect|remote-view|remote-control|connect|start|refresh|preview|fill|click|close)$/.test(req.url)){
     try{const owner=await authenticate(req);requestContext.enterWith({owner,authorization:req.headers.authorization});let raw='';for await(const chunk of req){raw+=chunk;if(Buffer.byteLength(raw)>50000)throw Object.assign(Error('Request too large.'),{status:413});}let body;try{body=JSON.parse(raw||'{}');}catch{throw Object.assign(Error('Invalid request.'),{status:400});}
-      const action=req.url.split('/').pop();if(linkedin.sessions.has(owner)&&typeof body.preview==='boolean')linkedin.sessions.get(owner).previewEnabled=body.preview;const data=action==='preview'?await linkedin.preview(owner):action==='connect'?await connectLogin(linkedin,owner,{preview:body.preview!==false,resetPending:body.resetPending===true,attemptId:typeof body.attemptId==='string'?body.attemptId.slice(0,80):undefined}):action==='start'?await linkedin.start(owner,{preview:body.preview!==false}):action==='refresh'?await linkedin.refresh(owner,{preview:body.preview===true}):action==='fill'?await linkedin.fill(owner,body):action==='click'?await linkedin.click(owner,body):(body.onlyUnverified===true?await closePendingLogin(linkedin,owner,{attemptId:body.attemptId}):await linkedin.close(owner,{forget:body.forget===true}));return res.end(JSON.stringify(data));
+      const action=req.url.split('/').pop();
+      if(action==='remote-connect'){const data=await connectLogin(linkedin,owner,{preview:false,resetPending:true,attemptId:body.attemptId});const session=linkedin.sessions.get(owner);if(session){session.remoteUntil=Date.now()+5*60000;session.remoteVersion=0;}return res.end(JSON.stringify(data));}
+      if(action==='remote-view'||action==='remote-control')return res.end(JSON.stringify(await remoteLinkedin[action==='remote-view'?'view':'control'](owner,body)));
+      if(linkedin.sessions.has(owner)&&typeof body.preview==='boolean')linkedin.sessions.get(owner).previewEnabled=body.preview;const data=action==='preview'?await linkedin.preview(owner):action==='connect'?await connectLogin(linkedin,owner,{preview:body.preview!==false,resetPending:body.resetPending===true,attemptId:typeof body.attemptId==='string'?body.attemptId.slice(0,80):undefined}):action==='start'?await linkedin.start(owner,{preview:body.preview!==false}):action==='refresh'?await linkedin.refresh(owner,{preview:body.preview===true}):action==='fill'?await linkedin.fill(owner,body):action==='click'?await linkedin.click(owner,body):(body.onlyUnverified===true?await closePendingLogin(linkedin,owner,{attemptId:body.attemptId}):await linkedin.close(owner,{forget:body.forget===true}));return res.end(JSON.stringify(data));
     }catch(e){res.writeHead(e.status||503);return res.end(JSON.stringify({message:e.status?e.message:'Private LinkedIn action could not complete. Refresh its fields.'}));}
   }
-  if (req.method === 'POST' && /^\/login\/(connect|start|refresh|preview|fill|click|close|job-start|job-status|job-answer|job-stop)$/.test(req.url)) {
+  if (req.method === 'POST' && /^\/login\/(remote-connect|remote-view|remote-control|connect|start|refresh|preview|fill|click|close|job-start|job-status|job-answer|job-stop)$/.test(req.url)) {
     try {
       const owner = await authenticate(req);
       requestContext.enterWith({owner,authorization:req.headers.authorization});
       let text = ''; for await (const chunk of req) { text += chunk; if (Buffer.byteLength(text) > 50000) throw Object.assign(new Error('Request too large.'), { status: 413 }); }
       let body; try { body = JSON.parse(text || '{}'); } catch { throw Object.assign(new Error('Invalid request.'), { status: 400 }); }
       const action = req.url.split('/').pop();
+      if(action==='remote-connect'){const data=await connectLogin(relay,owner,{preview:false,resetPending:true,attemptId:body.attemptId});const session=relay.sessions.get(owner);if(session){session.remoteUntil=Date.now()+5*60000;session.remoteVersion=0;}return res.end(JSON.stringify(data));}
+      if(action==='remote-view'||action==='remote-control')return res.end(JSON.stringify(await remoteNaukri[action==='remote-view'?'view':'control'](owner,body)));
+
       const loadMaterial = async () => {
         const response = await fetch(backendOrigin()+'/profile/browser-material', { headers: { Authorization: req.headers.authorization }, signal: AbortSignal.timeout(20000), redirect: 'error' });
         if (!response.ok) throw Object.assign(new Error('Your saved profile/resume could not be loaded. Check Get Started.'), { status: 409 });
