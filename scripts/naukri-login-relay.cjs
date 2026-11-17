@@ -262,7 +262,7 @@ class LoginRelay {
       const el = s.page.locator(`[data-applybro-login="${button.id}"]`);
       if ((await el.evaluate(el => (el.innerText || el.value || '').replace(/\s+/g, ' ').trim())) !== button.label) throw error('The login button changed. Refresh first.', 409);
       s.lastAction = button.label; s.loginStartedAt = Date.now(); s.network = null; s.profileCheckAttempted = false;
-      await el.click({ timeout: 5000 }); await s.page.waitForTimeout(3000);
+      await el.click({ timeout: 5000, noWaitAfter: true }); await s.page.waitForTimeout(3000);
       return this.snapshot(s);
     });
   }

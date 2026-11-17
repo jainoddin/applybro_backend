@@ -62,8 +62,8 @@ class LinkedInLoginRelay extends LoginRelay{
    throw fail(e.status?e.message:messages[stage]||'Private LinkedIn browser could not start.',e.status||503);
   }finally{this.opening--;}
  });}
- async refresh(owner){return this.locked(owner,()=>this.snapshot(this.current(owner)));}
- async fill(owner,body){if(body?.fields?.some(f=>/captcha/i.test(this.sessions.get(owner)?.fields?.find(x=>x.id===f.id)?.label||'')))throw fail('Complete CAPTCHA in the private browser.');try{return await super.fill(owner,body);}catch(e){e.message=e.message.replaceAll('Naukri','LinkedIn');throw e;}}
- async click(owner,body){try{return await super.click(owner,body);}catch(e){e.message=e.message.replaceAll('Naukri','LinkedIn');throw e;}}
+ async refresh(owner){return this.locked(owner,async()=>{const s=this.current(owner);await s.page.waitForLoadState('domcontentloaded',{timeout:5000}).catch(()=>{});return this.snapshot(s);});}
+ async fill(owner,body){if(body?.fields?.some(f=>/captcha/i.test(this.sessions.get(owner)?.fields?.find(x=>x.id===f.id)?.label||'')))throw fail('Complete CAPTCHA in the private browser.');try{return await super.fill(owner,body);}catch(e){e.message=e.message.replaceAll('Naukri','LinkedIn');if(!e.status){console.error(JSON.stringify({event:'LINKEDIN_ACTION_FAILED',errorType:e.name==='TimeoutError'?'TimeoutError':'Error'}));throw fail('LinkedIn did not finish this sign-in step. Check the connection to read its current page; your password will not be sent again.',503);}throw e;}}
+ async click(owner,body){try{return await super.click(owner,body);}catch(e){e.message=e.message.replaceAll('Naukri','LinkedIn');if(!e.status){console.error(JSON.stringify({event:'LINKEDIN_ACTION_FAILED',errorType:e.name==='TimeoutError'?'TimeoutError':'Error'}));throw fail('LinkedIn did not finish this sign-in step. Check the connection to read its current page; your password will not be sent again.',503);}throw e;}}
 }
 module.exports={LinkedInLoginRelay,LinkedInStore,allowed};
