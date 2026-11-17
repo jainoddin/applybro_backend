@@ -45,16 +45,22 @@ class LinkedInLoginRelay extends LoginRelay{
   return{...view,status,version:s.version,sessionSaved:!!s.sessionSaved,origin:new URL(s.page.url()).origin,expiresAt:s.expiresAt,preview,message:view.signedIn?'LinkedIn signed-in navigation and profile observed.':view.message||(view.challenge?'Complete LinkedIn verification in the private browser.':'Enter the fields LinkedIn requests. Sign-in is not confirmed yet.')};
  }
  async start(owner,{preview=true}={}){return this.locked(owner,async()=>{
-  await this.close(owner);if(this.sessions.size+this.opening>=1)throw fail('Private LinkedIn browser is in use.',503);this.opening++;let browser;
-  try{const screen=await display();browser=await this.launch({headless:false,...(screen?{env:{...process.env,DISPLAY:screen}}:{}),...(process.platform==='win32'?{executablePath:process.env.CLOUD_AGENT_CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe'}:{})});
-   const saved=await this.store.load(owner),context=await browser.newContext({viewport:{width:1280,height:900},serviceWorkers:'block',...(saved?{storageState:saved}:{})});
+  await this.close(owner);if(this.sessions.size+this.opening>=1)throw fail('Private LinkedIn browser is in use.',503);this.opening++;let browser,stage='DISPLAY';
+  try{const screen=await display();stage='LAUNCH';browser=await this.launch({headless:false,...(screen?{env:{...process.env,DISPLAY:screen}}:{}),...(process.platform==='win32'?{executablePath:process.env.CLOUD_AGENT_CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe'}:{})});
+   stage='SESSION_LOAD';const saved=await this.store.load(owner);stage='CONTEXT';const context=await browser.newContext({viewport:{width:1280,height:900},serviceWorkers:'block',...(saved?{storageState:saved}:{})});
    const checkPublic=createPublicHttpsGuard({isPublic:publicAddress});
    await context.route('**/*',async route=>{const r=route.request();try{const u=new URL(r.url());if(u.protocol!=='https:'||u.username||u.password||u.port&&u.port!=='443')return route.abort();if(await checkPublic(r.url()))return route.abort();if(r.isNavigationRequest()&&r.frame().parentFrame()===null&&!allowed(r.url()))return route.abort();return route.continue();}catch{return route.abort();}});
    const page=await context.newPage();page.on('popup',p=>void p.close());
-   const response=await page.goto(saved?'https://www.linkedin.com/feed/':'https://www.linkedin.com/login',{waitUntil:'domcontentloaded',timeout:20000});
+   stage='NAVIGATION';const response=await page.goto(saved?'https://www.linkedin.com/feed/':'https://www.linkedin.com/login',{waitUntil:'domcontentloaded',timeout:20000});
    if(response?.status()>=400){await browser.close();return{status:'BLOCKED',fields:[],buttons:[],signedIn:false,message:'LinkedIn denied this browser. No account connected.',httpStatus:response.status()};}
-   await page.waitForSelector('input:not([type=hidden]),nav,h1',{timeout:1500}).catch(()=>{});const s={id:randomUUID(),owner,previewEnabled:preview,browser,page,version:0,fields:[],buttons:[],pendingAuth:new Map()};this.sessions.set(owner,s);this.touch(owner,s);return await this.snapshot(s);
-  }catch(e){await this.close(owner);await browser?.close().catch(()=>{});throw fail(e.status?e.message:'Private LinkedIn browser could not start.',e.status||503);}finally{this.opening--;}
+   stage='INSPECTION';await page.waitForSelector('input:not([type=hidden]),nav,h1',{timeout:1500}).catch(()=>{});const s={id:randomUUID(),owner,previewEnabled:preview,browser,page,version:0,fields:[],buttons:[],pendingAuth:new Map()};this.sessions.set(owner,s);this.touch(owner,s);return await this.snapshot(s);
+  }catch(e){
+   const timeout=e?.name==='TimeoutError'||/timeout|timed out/i.test(e?.message||'');
+   console.error(JSON.stringify({event:'LINKEDIN_START_FAILED',stage,timeout,errorType:['TimeoutError','Error','TypeError'].includes(e?.name)?e.name:'Error'}));
+   await this.close(owner);await browser?.close().catch(()=>{});
+   const messages={DISPLAY:'The browser display service is unavailable.',LAUNCH:'The server could not launch the LinkedIn browser.',SESSION_LOAD:'The saved LinkedIn session could not be loaded from the backend.',CONTEXT:'The LinkedIn browser session could not be created.',NAVIGATION:timeout?'LinkedIn did not load within 20 seconds. No sign-in was confirmed.':'The server could not load LinkedIn. No sign-in was confirmed.',INSPECTION:'LinkedIn loaded, but its sign-in page could not be inspected.'};
+   throw fail(e.status?e.message:messages[stage]||'Private LinkedIn browser could not start.',e.status||503);
+  }finally{this.opening--;}
  });}
  async refresh(owner){return this.locked(owner,()=>this.snapshot(this.current(owner)));}
  async fill(owner,body){if(body?.fields?.some(f=>/captcha/i.test(this.sessions.get(owner)?.fields?.find(x=>x.id===f.id)?.label||'')))throw fail('Complete CAPTCHA in the private browser.');try{return await super.fill(owner,body);}catch(e){e.message=e.message.replaceAll('Naukri','LinkedIn');throw e;}}
