@@ -53,7 +53,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method !== 'GET' || !['/', '/health', '/result'].includes(req.url)) {
     res.writeHead(404); return res.end(JSON.stringify({ message: 'Not found' }));
   }
-  res.end(JSON.stringify(req.url === '/health' ? { status: 'ok', purpose: 'private-browser-helper',sessionPersistenceConfigured:!!relay.store.key,sessionStorage:persistent?'backend':'local-files',linkedinLogin:true,otpBridge:true } : result));
+  res.end(JSON.stringify(req.url === '/health' ? { status: 'ok', purpose: 'private-browser-helper',remoteLogin:true,protocolVersion:2,revision:/^[a-f0-9]{7,40}$/i.test(process.env.RENDER_GIT_COMMIT||'')?process.env.RENDER_GIT_COMMIT:null,sessionPersistenceConfigured:!!relay.store.key,sessionStorage:persistent?'backend':'local-files',linkedinLogin:true,otpBridge:true } : result));
 });
 let probeChild=null;
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,async()=>{probeChild?.kill('SIGTERM');await linkedin.dispose();await relay.dispose();server.close(()=>process.exit(0));});
