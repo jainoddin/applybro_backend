@@ -1,7 +1,7 @@
 const { chromium } = require('playwright');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
-const dns = require('node:dns/promises');
+const {createPublicHttpsGuard}=require('./public-https-guard.cjs');
 const { isIP } = require('node:net');
 const publicAddress = value => {
   if (isIP(value) === 4) { const p = value.split('.').map(Number); return !(p[0] === 0 || p[0] === 10 || p[0] === 127 || p[0] >= 224 || p[0] === 169 && p[1] === 254 || p[0] === 172 && p[1] >= 16 && p[1] <= 31 || p[0] === 192 && [0, 168].includes(p[1]) || p[0] === 100 && p[1] >= 64 && p[1] <= 127 || p[0] === 198 && [18, 19].includes(p[1])); }
@@ -157,11 +157,12 @@ class LoginRelay {
         const saved=await this.store.load(owner);
         const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: 'block',...(saved?{storageState:saved}:{}) });
         let s;
+        const checkPublic=createPublicHttpsGuard({isPublic:publicAddress});
         await context.route('**/*', async route => {
           const r = route.request(); let u; try { u = new URL(r.url()); } catch { return route.abort(); }
           const abort = reason => { if (s && authRequest(r)) s.network = { outcome: 'REQUEST_FAILED', guardReason: reason }; return route.abort(); };
           if (u.protocol !== 'https:' || u.port && u.port !== '443' || u.username || u.password || /^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[)/i.test(u.hostname)) return abort('INVALID_PUBLIC_HTTPS_DESTINATION');
-          try { const addresses = await dns.lookup(u.hostname, { all: true }); if (!addresses.length || !addresses.every(x => publicAddress(x.address))) return abort('NON_PUBLIC_ADDRESS'); } catch { return abort('DNS_LOOKUP_FAILED'); }
+          const denial=await checkPublic(r.url());if(denial)return abort(denial);
           let mainNavigation=false;try{mainNavigation=r.isNavigationRequest()&&r.frame().parentFrame()===null;}catch{mainNavigation=r.isNavigationRequest();}
           if (mainNavigation && !(s?.workflow ? s.workflow.navigation.allowed(r.url()) : allowedPage(r.url()))) return abort('UNSUPPORTED_LOGIN_NAVIGATION');
           return route.continue();

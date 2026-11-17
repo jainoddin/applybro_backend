@@ -9,6 +9,7 @@ COPY scripts/naukri-login-relay.cjs ./scripts/naukri-login-relay.cjs
 COPY scripts/linkedin-login-relay.cjs ./scripts/linkedin-login-relay.cjs
 COPY scripts/connect-login.cjs ./scripts/connect-login.cjs
 COPY scripts/backend-session-store.cjs ./scripts/backend-session-store.cjs
+COPY scripts/public-https-guard.cjs ./scripts/public-https-guard.cjs
 COPY scripts/private-session-store.cjs ./scripts/private-session-store.cjs
 COPY scripts/naukri-workflow.cjs scripts/naukri-flow.cjs scripts/cloud-browser.cjs scripts/naukri-discovery.cjs ./scripts/
 COPY scripts/company-navigation.cjs ./scripts/company-navigation.cjs

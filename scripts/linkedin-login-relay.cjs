@@ -1,7 +1,8 @@
 // Owner-authenticated LinkedIn login only. No application actions or challenge bypass.
 const {LoginRelay,display,publicAddress}=require('./naukri-login-relay.cjs');
 const {chromium}=require('playwright');
-const dns=require('node:dns/promises'),fs=require('node:fs/promises'),path=require('node:path');
+const {createPublicHttpsGuard}=require('./public-https-guard.cjs');
+const fs=require('node:fs/promises'),path=require('node:path');
 const {randomBytes,randomUUID,createHash,createCipheriv,createDecipheriv}=require('node:crypto');
 const fail=(message,status=409)=>Object.assign(Error(message),{status});
 const allowed=url=>{try{const u=new URL(url);return u.protocol==='https:'&&!u.username&&!u.password&&(!u.port||u.port==='443')&&['linkedin.com','www.linkedin.com'].includes(u.hostname)&&/^\/(login|uas\/|checkpoint\/|feed(?:\/|$)|in\/|mynetwork(?:\/|$)|authwall)/.test(u.pathname);}catch{return false;}};
@@ -47,7 +48,8 @@ class LinkedInLoginRelay extends LoginRelay{
   await this.close(owner);if(this.sessions.size+this.opening>=1)throw fail('Private LinkedIn browser is in use.',503);this.opening++;let browser;
   try{const screen=await display();browser=await this.launch({headless:false,...(screen?{env:{...process.env,DISPLAY:screen}}:{}),...(process.platform==='win32'?{executablePath:process.env.CLOUD_AGENT_CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe'}:{})});
    const saved=await this.store.load(owner),context=await browser.newContext({viewport:{width:1280,height:900},serviceWorkers:'block',...(saved?{storageState:saved}:{})});
-   await context.route('**/*',async route=>{const r=route.request();try{const u=new URL(r.url());if(u.protocol!=='https:'||u.username||u.password||u.port&&u.port!=='443')return route.abort();const addresses=await dns.lookup(u.hostname,{all:true});if(!addresses.length||!addresses.every(a=>publicAddress(a.address)))return route.abort();if(r.isNavigationRequest()&&r.frame().parentFrame()===null&&!allowed(r.url()))return route.abort();return route.continue();}catch{return route.abort();}});
+   const checkPublic=createPublicHttpsGuard({isPublic:publicAddress});
+   await context.route('**/*',async route=>{const r=route.request();try{const u=new URL(r.url());if(u.protocol!=='https:'||u.username||u.password||u.port&&u.port!=='443')return route.abort();if(await checkPublic(r.url()))return route.abort();if(r.isNavigationRequest()&&r.frame().parentFrame()===null&&!allowed(r.url()))return route.abort();return route.continue();}catch{return route.abort();}});
    const page=await context.newPage();page.on('popup',p=>void p.close());
    const response=await page.goto(saved?'https://www.linkedin.com/feed/':'https://www.linkedin.com/login',{waitUntil:'domcontentloaded',timeout:20000});
    if(response?.status()>=400){await browser.close();return{status:'BLOCKED',fields:[],buttons:[],signedIn:false,message:'LinkedIn denied this browser. No account connected.',httpStatus:response.status()};}
