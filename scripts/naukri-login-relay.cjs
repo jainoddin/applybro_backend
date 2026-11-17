@@ -1,6 +1,6 @@
 const { chromium } = require('playwright');
-const { spawn } = require('node:child_process');
-const fs = require('node:fs');
+const {createDisplayManager}=require('./browser-display.cjs');
+const browserDisplay=createDisplayManager();
 const {createPublicHttpsGuard}=require('./public-https-guard.cjs');
 const { isIP } = require('node:net');
 const publicAddress = value => {
@@ -14,21 +14,7 @@ const {PrivateSessionStore}=require('./private-session-store.cjs');
 const {randomUUID}=require('node:crypto');
 const error = (message, status = 400) => Object.assign(new Error(message), { status });
 const authRequest = request => { try { const u = new URL(request.url()); return request.method() === 'POST' && /(^|\.)naukri\.com$/i.test(u.hostname) && /login|auth|otp|verify|session/i.test(u.pathname); } catch { return false; } };
-let displayProcess, displayReady;
-async function display() {
-  if (process.platform !== 'linux' || process.env.DISPLAY) return process.env.DISPLAY;
-  if (!displayReady) displayReady = (async () => {
-    displayProcess = spawn('Xvfb', [':99', '-screen', '0', '1280x900x24', '-nolisten', 'tcp'], { stdio: 'ignore' });
-    let failed = false; displayProcess.on('error', () => { failed = true; });
-    for (let i = 0; i < 50; i++) {
-      if (failed || displayProcess.exitCode !== null) throw error('The private browser display could not start.', 503);
-      if (fs.existsSync('/tmp/.X11-unix/X99')) return ':99';
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    throw error('The private browser display timed out.', 503);
-  })().catch(e => { displayReady = null; throw e; });
-  return displayReady;
-}
+const display=()=>browserDisplay.display();
 
 class LoginRelay {
   constructor() { this.sessions = new Map(); this.busy = new Set(); this.opening = 0; this.store=new PrivateSessionStore();this.launch = options => chromium.launch(options); }
@@ -266,7 +252,7 @@ class LoginRelay {
       return this.snapshot(s);
     });
   }
-  async dispose() { await Promise.all([...this.sessions.keys()].map(id => this.close(id))); displayProcess?.kill(); }
+  async dispose() { await Promise.all([...this.sessions.keys()].map(id => this.close(id))); browserDisplay.stop(); }
 }
 function backendOrigin() {
   const u = new URL(process.env.APPLYBRO_BACKEND_URL || process.env.BACKEND_API_URL || 'https://applybro-backend.onrender.com');

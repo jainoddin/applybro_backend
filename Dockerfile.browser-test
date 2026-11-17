@@ -5,6 +5,7 @@ COPY package*.json ./
 RUN npm ci --ignore-scripts
 COPY scripts/server-browser-probe.cjs ./scripts/server-browser-probe.cjs
 COPY scripts/server-browser-host.cjs ./scripts/server-browser-host.cjs
+COPY scripts/browser-display.cjs ./scripts/browser-display.cjs
 COPY scripts/naukri-login-relay.cjs ./scripts/naukri-login-relay.cjs
 COPY scripts/linkedin-login-relay.cjs ./scripts/linkedin-login-relay.cjs
 COPY scripts/connect-login.cjs ./scripts/connect-login.cjs
