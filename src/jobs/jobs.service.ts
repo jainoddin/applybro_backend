@@ -109,11 +109,13 @@ export class JobsService {
     const submitted=await this.prisma.jobApplication.findMany({where:{userId,status:'APPLIED',appliedAt:{gte:from}}});
     const sent=submitted.filter(app=>hasSubmissionEvidence(app)).length;
     const remaining=Math.max(0,user.dailyApplyLimit-sent);
-    const blocked:any[]=await this.prisma.$queryRaw`SELECT "id","stage" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage" IN ('REVIEW_REQUIRED','UNKNOWN') AND "createdAt" > NOW() - INTERVAL '2 hours'`;
-    if(blocked.length)return {appliedCount:0,autoApplyActive:true,runs:[],skipped:[],message:`${blocked.length} existing applications need attention. No additional search tabs were opened. Resume one browser task and resolve its form or submission outcome first.`};
+    const inFlight:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage" IN ('OPENED','SUBMITTING') AND "updatedAt" > NOW() - INTERVAL '3 minutes'`;
+    if(inFlight.length)return {appliedCount:0,autoApplyActive:true,runs:[],skipped:[],message:'An application step is currently in flight in your browser. Waiting for it to finish.'};
     let data=await this.getMatchedJobs(userId);
     if(!data.jobs.length)data=await this.discoverMoreJobs(userId);
-    const candidates=data.jobs.filter(job=>job.status!=='APPLIED'&&job.matchAssessed&&job.matchScore>=user.minMatchScore).slice(0,remaining);
+    const inProgress:any[]=await this.prisma.$queryRaw`SELECT "applicationId" FROM "BrowserRun" WHERE "userId"=${userId} AND "stage" IN ('OPENED','SUBMITTING','BROWSER_CONFIRMED') AND "createdAt" > NOW() - INTERVAL '24 hours'`;
+    const inProgressIds=new Set(inProgress.map(r=>r.applicationId).filter(Boolean));
+    const candidates=data.jobs.filter(job=>job.status!=='APPLIED'&&!inProgressIds.has(job.id)&&job.matchAssessed&&job.matchScore>=user.minMatchScore).slice(0,remaining);
     const runs=[],skipped=[];
     for(const job of candidates){try{runs.push(await this.companion.create(userId,{kind:'APPLY',applicationId:job.id,autoSubmit:true}));}catch(error){skipped.push({jobId:job.id,message:typeof error.message==='string'?error.message:'Could not queue job'});}}
     if(!runs.length&&remaining>0){
