@@ -77,8 +77,9 @@ export class WhatsAppService {
   const contacts:any[]=await this.db.$queryRaw`SELECT "encrypted" FROM "WhatsAppContact" WHERE "userId"=${run.userId} AND "verifiedAt" IS NOT NULL`;
   if(!contacts[0])return null;
   const id=randomUUID(),expires=new Date(Date.now()+300000),data=seal({field,url,context:{url,company:context.company,title:context.title}});
-  const active:any[]=await this.db.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "id"=${run.id} AND "userId"=${run.userId} AND "state"='WAITING_USER'`;
-  if(!active[0])return null;
+  const activeAgent:any[]=await this.db.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "id"=${run.id} AND "userId"=${run.userId} AND "state"='WAITING_USER'`;
+  const activeBrowser:any[]=activeAgent[0]?[]:await this.db.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "id"=${run.id} AND "userId"=${run.userId} AND "stage" IN ('REVIEW_REQUIRED','OPENED','SUBMITTING')`;
+  if(!activeAgent[0]&&!activeBrowser[0])return null;
   await this.db.$executeRaw`INSERT INTO "WhatsAppQuestion"("id","runId","userId","encrypted","expiresAt") VALUES (${id},${run.id},${run.userId},${data},${expires})`;
   await this.db.$executeRaw`UPDATE "WhatsAppQuestion" SET "state"='SENDING' WHERE "id"=${id}`;
   try{
@@ -103,10 +104,28 @@ export class WhatsAppService {
      const phoneHash=this.phoneHash(message.from);
      const pairing=/^PAIR ([a-f0-9]{32})$/.exec(text);
      if(pairing){await tx.$executeRaw`UPDATE "WhatsAppContact" SET "verifiedAt"=NOW(),"pairHash"=NULL,"pairExpires"=NULL WHERE "phoneHash"=${phoneHash} AND "pairHash"=${tokenHash(pairing[1])} AND "pairExpires">NOW()`;return;}
-     // A quoted reply is mandatory: no guessing among parallel application questions.
-     if(typeof message.context?.id!=='string')return;
-     const rows:any[]=await tx.$queryRaw`SELECT q."id" FROM "WhatsAppQuestion" q JOIN "WhatsAppContact" c ON c."userId"=q."userId" JOIN "AgentRun" r ON r."id"=q."runId" WHERE c."phoneHash"=${phoneHash} AND c."verifiedAt" IS NOT NULL AND q."messageId"=${message.context.id} AND q."state"='ACCEPTED' AND q."expiresAt">NOW() AND r."state"='WAITING_USER' FOR UPDATE OF q`;
-     if(rows[0])await tx.$executeRaw`UPDATE "WhatsAppQuestion" SET "state"='ANSWERED',"answer"=${seal({value:text})},"answeredAt"=NOW() WHERE "id"=${rows[0].id} AND "state"='ACCEPTED'`;
+     let rows:any[]=[];
+     if(typeof message.context?.id==='string'){
+       rows=await tx.$queryRaw`SELECT q."id", q."runId", q."userId", q."encrypted" FROM "WhatsAppQuestion" q JOIN "WhatsAppContact" c ON c."userId"=q."userId" WHERE c."phoneHash"=${phoneHash} AND c."verifiedAt" IS NOT NULL AND q."messageId"=${message.context.id} AND q."state"='ACCEPTED' AND q."expiresAt">NOW() FOR UPDATE OF q`;
+     }
+     if(!rows[0]){
+       rows=await tx.$queryRaw`SELECT q."id", q."runId", q."userId", q."encrypted" FROM "WhatsAppQuestion" q JOIN "WhatsAppContact" c ON c."userId"=q."userId" WHERE c."phoneHash"=${phoneHash} AND c."verifiedAt" IS NOT NULL AND q."state"='ACCEPTED' AND q."expiresAt">NOW() ORDER BY q."expiresAt" DESC LIMIT 1 FOR UPDATE OF q`;
+     }
+     if(rows[0]){
+       const q=rows[0];
+       await tx.$executeRaw`UPDATE "WhatsAppQuestion" SET "state"='ANSWERED',"answer"=${seal({value:text})},"answeredAt"=NOW() WHERE "id"=${q.id} AND "state"='ACCEPTED'`;
+       let qData:any=null;try{qData=unseal(q.encrypted);}catch{}
+       if(qData?.field)await this.remember(q.userId,qData.field,text,qData.context);
+       const bRuns:any[]=await tx.$queryRaw`SELECT "id","details" FROM "BrowserRun" WHERE "id"=${q.runId}`;
+       if(bRuns[0]){
+         const fieldLabel=qData?.field?.label||'answer';
+         const details=bRuns[0].details||{};
+         const answers=details.answers||{};
+         answers[fieldLabel]=text;
+         const updatedDetails={...details,answers,message:`Received WhatsApp answer for ${fieldLabel}. Resuming application.`};
+         await tx.$executeRaw`UPDATE "BrowserRun" SET "details"=${JSON.stringify(updatedDetails)}::jsonb,"stage"='REVIEW_REQUIRED',"updatedAt"=NOW() WHERE "id"=${q.runId}`;
+       }
+     }
     });
    }
   }
