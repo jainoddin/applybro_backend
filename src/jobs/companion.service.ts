@@ -60,7 +60,7 @@ export class CompanionService {
    const devices:any[]=await this.prisma.$queryRaw`SELECT "id","expiresAt" FROM "BrowserDevice" WHERE "userId"=${userId} AND "revokedAt" IS NULL AND "expiresAt">NOW() ORDER BY "createdAt" DESC`;
    const runs:any[]=await this.prisma.$queryRaw`SELECT "id","deviceId","kind","portal","stage","url","details","updatedAt" FROM "BrowserRun" WHERE "userId"=${userId} ORDER BY "updatedAt" DESC LIMIT 30`;
    const sessions:any[]=await this.prisma.$queryRaw`SELECT DISTINCT ON ("portal") "id","deviceId","kind","portal","stage","updatedAt" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='VERIFY' ORDER BY "portal","updatedAt" DESC`;
-   const activeAutoRuns:any[]=await this.prisma.$queryRaw`SELECT "id","stage","kind" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind" IN ('APPLY','DISCOVER','INSPECT') AND "stage" IN ('CREATED','OPENED','LOGIN_REQUIRED','REVIEW_REQUIRED','SUBMITTING','UNKNOWN') AND ("details"->>'autoSubmit'='true' OR "details"->>'autoDiscover'='true') AND ("createdAt">NOW()-INTERVAL '1 hour' OR "stage" IN ('SUBMITTING','UNKNOWN'))`;
+   const activeAutoRuns:any[]=await this.prisma.$queryRaw`SELECT "id","stage","kind" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind" IN ('APPLY','DISCOVER','INSPECT') AND "stage" IN ('CREATED','OPENED','LOGIN_REQUIRED','REVIEW_REQUIRED','SUBMITTING','UNKNOWN') AND ("details"->>'autoSubmit'='true' OR "details"->>'autoDiscover'='true') AND ("createdAt">NOW()-INTERVAL '24 hours' OR "stage" IN ('SUBMITTING','UNKNOWN'))`;
    const user=await this.prisma.user.findUnique({where:{id:userId},include:{subscription:true}});
    const hosted:any[]=await this.prisma.$queryRaw`SELECT "enabled" FROM "AgentPreference" WHERE "userId"=${userId}`;
    const blocker=process.env.COMPANION_AUTO_APPLY_ENABLED!=='true'?'Desktop processing is unavailable on this deployment.':!user?.subscription?.active||user.subscription.trialEnds<=new Date()?'Your plan has expired. Choose an active plan.':user.activeMode!=='AUTO_APPLY'||!user.autoApplyConsent?'Save Auto-Apply ON in Get Started → Configure Applications first.':hosted[0]?.enabled?'Pause Hosted Agent before enabling this computer.':'';
@@ -142,7 +142,7 @@ export class CompanionService {
    const remaining=await this.remaining(device.userId,user.dailyApplyLimit);
    if(!remaining)return {runs:[],remaining:0,message:'Daily limit reached. Unconfirmed submissions also reserve a slot.'};
    // Never replay a click whose result is unknown, or silently restart a form needing input.
-   const pending:any[]=await this.prisma.$queryRaw`SELECT "id","kind","stage","portal" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('CREATED','OPENED') AND ("details"->>'autoSubmit'='true' OR "details"->>'autoDiscover'='true') AND "createdAt">NOW()-INTERVAL '1 hour' ORDER BY "createdAt" ASC LIMIT 30`;
+   const pending:any[]=await this.prisma.$queryRaw`SELECT "id","kind","stage","portal" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('CREATED','OPENED') AND ("details"->>'autoSubmit'='true' OR "details"->>'autoDiscover'='true') AND "createdAt">NOW()-INTERVAL '24 hours' ORDER BY "createdAt" ASC LIMIT 30`;
    if(pending.length)return {runs:pending,remaining};
    const settings:any[]=await this.prisma.$queryRaw`SELECT "selectedPortals" FROM "User" WHERE "id"=${device.userId}`;
    const selected=settings[0]?.selectedPortals;
@@ -160,7 +160,7 @@ export class CompanionService {
    const rows:any[]=await this.prisma.$queryRaw`SELECT * FROM "BrowserRun" WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id}`;
    const run=rows[0];if(!run)throw new NotFoundException('Browser task not found.');
    if(['DISCONNECTED','TIMED_OUT'].includes(run.stage))throw new BadRequestException('Portal check ended. Start a new login check from ApplyBro.');
-   if(Date.now()-new Date(run.createdAt).getTime()>3600000)throw new BadRequestException('Browser task expired. Start a new run.');
+   if(Date.now()-new Date(run.createdAt).getTime()>86400000)throw new BadRequestException('Browser task expired. Start a new run.');
    const user=await this.prisma.user.findUnique({where:{id:device.userId},include:{subscription:true}});
    const autoAvailable=process.env.COMPANION_AUTO_APPLY_ENABLED==='true'&&user.activeMode==='AUTO_APPLY'&&user.autoApplyConsent&&user.subscription?.active&&user.subscription.trialEnds>new Date()&&await this.remaining(user.id,user.dailyApplyLimit)>0;
    const files:any[]=run.kind==='APPLY'&&run.details?.resumeId?await this.prisma.$queryRaw`SELECT "fileName","fileBytes","mimeType" FROM "Resume" WHERE "userId"=${device.userId} AND "id"=${run.details.resumeId} AND "fileBytes" IS NOT NULL`:[];
@@ -221,7 +221,7 @@ export class CompanionService {
      const jobPath=(value:string)=>new URL(value).pathname.replace(/\/(apply|thanks|thank-you|confirmation)\/?$/,'').replace(/\/$/,'');
      const isNaukriApplyReturn = new URL(data.url).hostname === 'www.naukri.com' && new URL(data.url).pathname.startsWith('/myapply/');
       if(run.kind==='APPLY'&&jobPath(data.url)!==jobPath(run.url)&&!employerAlias&&!isNaukriApplyReturn)throw new BadRequestException('The browser is on a different job. Return to the original application.');
-     if(Date.now()-new Date(run.createdAt).getTime()>3600000)throw new BadRequestException('Browser task expired.');
+     if(Date.now()-new Date(run.createdAt).getTime()>86400000)throw new BadRequestException('Browser task expired.');
      if(stage===run.stage&&['VERIFIED','BROWSER_CONFIRMED'].includes(stage))return {stage};
      if(!(ALLOWED[run.stage]||[]).includes(stage))throw new BadRequestException('Invalid browser task transition.');
      if(stage==='SUBMITTING'){
