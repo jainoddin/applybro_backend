@@ -88,7 +88,15 @@ export class JobsService {
     const app = await this.prisma.jobApplication.findFirst({ where: { id: applicationId, userId } });
     if (!app || !isLive(app)) throw new NotFoundException('Live employer job not found. Refresh job discovery.');
     const m = meta(app);
-    if(m.version==='browser-listing-v1')return {success:false,action:'OPEN_EMPLOYER_FORM',applicationUrl:m.url,message:'Live portal link observed in your browser. Complete the portal application or use the companion; no submission is recorded on opening.'};
+    const existingRun: any[] = await this.prisma.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${userId} AND "applicationId"=${applicationId} AND "stage" IN ('CREATED','OPENED','REVIEW_REQUIRED') ORDER BY "createdAt" DESC LIMIT 1`;
+    let runId = existingRun[0]?.id;
+    if (!runId && ['browser-listing-v1','official-feed-v1'].includes(m.version)) {
+      try {
+        const created = await this.companion.create(userId, { kind: 'APPLY', applicationId, autoSubmit: true });
+        runId = created.id;
+      } catch {}
+    }
+    if(m.version==='browser-listing-v1')return {success:true,action:'OPEN_EMPLOYER_FORM',applicationUrl:m.url,runId,message:'Opening portal application task in your companion.'};
     // Recheck the listing in its authoritative feed; never open a stale/removed job as active.
     const current = await this.sources.discover();
     const listing = current.jobs.find(job => job.key === m.key);
@@ -115,9 +123,15 @@ export class JobsService {
     if(!data.jobs.length)data=await this.discoverMoreJobs(userId);
     const inProgress:any[]=await this.prisma.$queryRaw`SELECT "applicationId" FROM "BrowserRun" WHERE "userId"=${userId} AND "stage" IN ('OPENED','SUBMITTING','BROWSER_CONFIRMED') AND "createdAt" > NOW() - INTERVAL '24 hours'`;
     const inProgressIds=new Set(inProgress.map(r=>r.applicationId).filter(Boolean));
-    const candidates=data.jobs.filter(job=>job.status!=='APPLIED'&&!inProgressIds.has(job.id)&&job.matchAssessed&&job.matchScore>=user.minMatchScore).slice(0,remaining);
-    const runs=[],skipped=[];
-    for(const job of candidates){try{runs.push(await this.companion.create(userId,{kind:'APPLY',applicationId:job.id,autoSubmit:true}));}catch(error){skipped.push({jobId:job.id,message:typeof error.message==='string'?error.message:'Could not queue job'});}}
+    const pendingRuns: any[] = await this.prisma.$queryRaw`SELECT "id", "applicationId" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage" IN ('CREATED','OPENED') ORDER BY "createdAt" ASC LIMIT ${remaining}`;
+    const runs = [...pendingRuns.map(r => ({ id: r.id }))];
+    const pendingAppIds = new Set(pendingRuns.map(r => r.applicationId).filter(Boolean));
+    const needed = remaining - runs.length;
+    const skipped: any[] = [];
+    if (needed > 0) {
+      const candidates=data.jobs.filter(job=>job.status!=='APPLIED'&&!inProgressIds.has(job.id)&&!pendingAppIds.has(job.id)&&job.matchAssessed&&job.matchScore>=user.minMatchScore).slice(0,needed);
+      for(const job of candidates){try{runs.push(await this.companion.create(userId,{kind:'APPLY',applicationId:job.id,autoSubmit:true}));}catch(error){skipped.push({jobId:job.id,message:typeof error.message==='string'?error.message:'Could not queue job'});}}
+    }
     if(!runs.length&&remaining>0){
       const selected:any[]=await this.prisma.$queryRaw`SELECT "selectedPortals" FROM "User" WHERE "id"=${userId}`;
       const portals=Array.isArray(selected[0]?.selectedPortals)?selected[0].selectedPortals:['LinkedIn','Naukri.com'];
