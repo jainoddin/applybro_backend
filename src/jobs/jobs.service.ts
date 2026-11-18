@@ -109,7 +109,7 @@ export class JobsService {
     const submitted=await this.prisma.jobApplication.findMany({where:{userId,status:'APPLIED',appliedAt:{gte:from}}});
     const sent=submitted.filter(app=>hasSubmissionEvidence(app)).length;
     const remaining=Math.max(0,user.dailyApplyLimit-sent);
-    const blocked:any[]=await this.prisma.$queryRaw`SELECT "id","stage" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage" IN ('REVIEW_REQUIRED','UNKNOWN')`;
+    const blocked:any[]=await this.prisma.$queryRaw`SELECT "id","stage" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage" IN ('REVIEW_REQUIRED','UNKNOWN') AND "createdAt" > NOW() - INTERVAL '2 hours'`;
     if(blocked.length)return {appliedCount:0,autoApplyActive:true,runs:[],skipped:[],message:`${blocked.length} existing applications need attention. No additional search tabs were opened. Resume one browser task and resolve its form or submission outcome first.`};
     let data=await this.getMatchedJobs(userId);
     if(!data.jobs.length)data=await this.discoverMoreJobs(userId);

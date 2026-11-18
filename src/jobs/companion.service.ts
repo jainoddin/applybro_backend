@@ -75,7 +75,11 @@ export class CompanionService {
    await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='DISCONNECTED',"updatedAt"=NOW() WHERE "userId"=${userId} AND "portal"=${portal} AND "kind"='VERIFY' AND "stage" IN ('CREATED','OPENED','LOGIN_REQUIRED','VERIFIED')`;
    return {disconnected:true};
  }
- async cancel(userId:string,id:string){
+ async clearStale(userId:string){
+    const count=await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='CANCELLED',"updatedAt"=NOW() WHERE "userId"=${userId} AND "stage" IN ('CREATED','OPENED','LOGIN_REQUIRED','REVIEW_REQUIRED','UNKNOWN')`;
+    return {cleared:count};
+  }
+  async cancel(userId:string,id:string){
    const count=await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='CANCELLED',"updatedAt"=NOW() WHERE "id"=${id} AND "userId"=${userId} AND "stage" IN ('CREATED','OPENED','LOGIN_REQUIRED','REVIEW_REQUIRED')`;
    if(!count)throw new BadRequestException('Only an unsubmitted run can be cancelled. Check the employer outcome for a pending submission.');
    return {cancelled:true};

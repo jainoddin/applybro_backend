@@ -9,7 +9,8 @@ export class CompanionController{
  @Post('revoke') @UseGuards(AuthGuard) revoke(@Req()req:any){return this.companion.revoke(req.authUser.id);}
  @Post('disconnect-portal') @UseGuards(AuthGuard) disconnectPortal(@Req()req:any,@Body()body:any){return this.companion.disconnectPortal(req.authUser.id,body?.portal);}
  @Post('runs') @UseGuards(AuthGuard) create(@Req()req:any,@Body()body:any){return this.companion.create(req.authUser.id,body);}
- @Post('runs/:id/cancel') @UseGuards(AuthGuard) cancel(@Req()req:any,@Param('id')id:string){return this.companion.cancel(req.authUser.id,id);}
+ @Post('runs/clear-stale') @UseGuards(AuthGuard) clearStale(@Req()req:any){return this.companion.clearStale(req.authUser.id);}
+  @Post('runs/:id/cancel') @UseGuards(AuthGuard) cancel(@Req()req:any,@Param('id')id:string){return this.companion.cancel(req.authUser.id,id);}
  @Get('device/runs/:id') async task(@Req()req:any,@Param('id')id:string){return this.companion.task(await this.companion.device(req.headers.authorization),id);}
  @Post('device/runs/:id') async report(@Req()req:any,@Param('id')id:string,@Body()body:any){return this.companion.report(await this.companion.device(req.headers.authorization),id,body);}
  @Post('device/runs/:id/import') async importJobs(@Req()req:any,@Param('id')id:string,@Body()body:any){return this.companion.importJobs(await this.companion.device(req.headers.authorization),id,body);}
