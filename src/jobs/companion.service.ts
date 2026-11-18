@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { trustedApplicationUrl, sameApplicationPage } from './live-sources';
 import { minimumExperience,roleMatches,skillMatch } from './skill-match';
+import { hasSubmissionEvidence } from './application-evidence';
 
 export const portalUrls: Record<string,string> = {
   'Naukri.com':'https://www.naukri.com/mnjuser/profile',
@@ -32,7 +33,7 @@ export class CompanionService {
  private async remaining(userId:string,limit:number){
    const day=new Date(Date.now()+19800000).toISOString().slice(0,10),from=new Date(day+'T00:00:00+05:30');
    const applications=await this.prisma.jobApplication.findMany({where:{userId,status:'APPLIED',appliedAt:{gte:from}}});
-   const sent=applications.filter(app=>{const metadata:any=app.matchReasons;return ['official-feed-v1','browser-listing-v1'].includes(metadata?.version)&&(metadata.providerReceipt||metadata.browserConfirmation||metadata.agentConfirmation);}).length;
+   const sent=applications.filter(app=>hasSubmissionEvidence(app)).length;
    const pending:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage" IN ('SUBMITTING','UNKNOWN') AND "updatedAt">=${from}`;
    const hosted:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "state" IN ('SUBMITTING','UNKNOWN') AND "submitReservedAt">=${from}`;
    return Math.max(0,limit-sent-pending.length-hosted.length);
@@ -235,8 +236,8 @@ export class CompanionService {
        const day=new Date(Date.now()+19800000).toISOString().slice(0,10);
        const from=new Date(day+'T00:00:00+05:30');
        const submitted=await tx.jobApplication.findMany({where:{userId:device.userId,status:'APPLIED',appliedAt:{gte:from}}});
-       const sent=submitted.filter(app=>{const metadata:any=app.matchReasons;return ['official-feed-v1','browser-listing-v1'].includes(metadata?.version)&&(metadata.providerReceipt||metadata.browserConfirmation||metadata.agentConfirmation);}).length;
-       const pending:any[]=await tx.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "stage" IN ('SUBMITTING','UNKNOWN') AND "kind"='APPLY' AND "updatedAt">=${from}`;
+       const sent=submitted.filter(app=>hasSubmissionEvidence(app)).length;
+       const pending:any[]=await tx.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "id"!=${run.id} AND "stage" IN ('SUBMITTING','UNKNOWN') AND "kind"='APPLY' AND "updatedAt">=${from}`;
        const hosted:any[]=await tx.$queryRaw`SELECT "id","applicationId" FROM "AgentRun" WHERE "userId"=${device.userId} AND "state" IN ('SUBMITTING','UNKNOWN') AND "submitReservedAt">=${from}`;
        if(hosted.some(x=>x.applicationId===run.applicationId))throw new BadRequestException('A hosted submission is already pending for this job.');
        if(sent+pending.length+hosted.length>=user.dailyApplyLimit)throw new BadRequestException('Daily application limit reached. Pending outcomes also count against the limit.');
