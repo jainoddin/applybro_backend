@@ -31,6 +31,8 @@ Service: https://applybro-browser-access-test.onrender.com/result
 
 This proves only that the login form loaded on that server at that time. It does not verify an account, persist a session, submit a job, or establish continuous offline processing. The earlier `applybro-browser-probe` free service failed port readiness with its custom startup command; it is not the working test endpoint. Both temporary services have auto-deploy disabled.
 
+
+
 ## Authenticated dynamic login pilot
 
 The frontend `/naukri-test` now reads actual visible Naukri form fields and login/OTP buttons. POST `/login/start`, `/login/refresh`, `/login/fill`, `/login/click`, and `/login/close` require an ApplyBro Firebase bearer verified through the existing backend `/auth/me`. There is no unauthenticated browser-control route. Only official Naukri login/profile navigation is allowed; this relay cannot submit job applications.
