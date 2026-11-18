@@ -124,8 +124,16 @@ export class JobsService {
     return {appliedCount:0,autoApplyActive:true,runs,skipped,message:runs.length?`${runs.length} browser steps queued. Search pages import jobs, inspect descriptions and prepare eligible applications. Unknown questions pause for review; counts increase only after confirmation.`:'No eligible jobs could be queued. Check match threshold, daily limit and existing browser runs.'};
   }
   async toggleAutoApply(userId: string, enable: boolean) {
-    if(enable)throw new BadRequestException('Save Auto-Apply consent and resume in Application Settings to enable this mode.');
-    await this.prisma.user.update({ where: { id: userId }, data: { activeMode: ApplyMode.APPROVE_FIRST,autoApplyConsent:false } });
+    if (enable) {
+      const resume = await this.prisma.resume.findFirst({ where: { userId } });
+      if (!resume) throw new BadRequestException('Please upload a resume first.');
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { activeMode: ApplyMode.AUTO_APPLY, autoApplyConsent: true, consentTimestamp: new Date() },
+      });
+      return { success: true, autoApplyActive: true, activeMode: ApplyMode.AUTO_APPLY };
+    }
+    await this.prisma.user.update({ where: { id: userId }, data: { activeMode: ApplyMode.APPROVE_FIRST, autoApplyConsent: false } });
     return { success: true, autoApplyActive: false, activeMode: ApplyMode.APPROVE_FIRST };
   }
   async getAppliedJobs(userId: string) {
