@@ -61,7 +61,10 @@ export class CompanionService {
    const runs:any[]=await this.prisma.$queryRaw`SELECT "id","deviceId","kind","portal","stage","url","details","updatedAt" FROM "BrowserRun" WHERE "userId"=${userId} ORDER BY "updatedAt" DESC LIMIT 30`;
    const sessions:any[]=await this.prisma.$queryRaw`SELECT DISTINCT ON ("portal") "id","deviceId","kind","portal","stage","updatedAt" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='VERIFY' ORDER BY "portal","updatedAt" DESC`;
    const activeAutoRuns:any[]=await this.prisma.$queryRaw`SELECT "id","stage","kind" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind" IN ('APPLY','DISCOVER','INSPECT') AND "stage" IN ('CREATED','OPENED','LOGIN_REQUIRED','REVIEW_REQUIRED','SUBMITTING','UNKNOWN') AND ("details"->>'autoSubmit'='true' OR "details"->>'autoDiscover'='true') AND ("createdAt">NOW()-INTERVAL '1 hour' OR "stage" IN ('SUBMITTING','UNKNOWN'))`;
-   return {paired:!!devices.length,devices,runs,sessions,activeAutoRuns};
+   const user=await this.prisma.user.findUnique({where:{id:userId},include:{subscription:true}});
+   const hosted:any[]=await this.prisma.$queryRaw`SELECT "enabled" FROM "AgentPreference" WHERE "userId"=${userId}`;
+   const blocker=process.env.COMPANION_AUTO_APPLY_ENABLED!=='true'?'Desktop processing is unavailable on this deployment.':!user?.subscription?.active||user.subscription.trialEnds<=new Date()?'Your plan has expired. Choose an active plan.':user.activeMode!=='AUTO_APPLY'||!user.autoApplyConsent?'Save Auto-Apply ON in Get Started → Configure Applications first.':hosted[0]?.enabled?'Pause Hosted Agent before enabling this computer.':'';
+   return {paired:!!devices.length,devices,runs,sessions,activeAutoRuns,desktop:{ready:!blocker,blocker,dailyLimit:user?.dailyApplyLimit||0}};
  }
  async revoke(userId:string){
    await this.prisma.$executeRaw`UPDATE "BrowserDevice" SET "revokedAt"=NOW() WHERE "userId"=${userId}`;
