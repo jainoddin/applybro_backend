@@ -14,5 +14,6 @@ export class CompanionController{
  @Post('device/runs/:id') async report(@Req()req:any,@Param('id')id:string,@Body()body:any){return this.companion.report(await this.companion.device(req.headers.authorization),id,body);}
  @Post('device/runs/:id/import') async importJobs(@Req()req:any,@Param('id')id:string,@Body()body:any){return this.companion.importJobs(await this.companion.device(req.headers.authorization),id,body);}
  @Post('device/observe') async observe(@Req()req:any,@Body()body:any){return this.companion.observeJob(await this.companion.device(req.headers.authorization),body);}
+ @Post('device/auto-batch') async autoBatch(@Req()req:any){return this.companion.autoBatch(await this.companion.device(req.headers.authorization));}
  @Post('device/runs/:id/inspect') async inspect(@Req()req:any,@Param('id')id:string,@Body()body:any){return this.companion.observeJob(await this.companion.device(req.headers.authorization),body,id);}
 }

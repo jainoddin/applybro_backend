@@ -126,6 +126,29 @@ export class CompanionService {
    catch(error){if(error?.meta?.code==='23505')throw new BadRequestException('An active browser run already exists for this application.');throw error;}
    return {id,url,kind,portal};
  }
+ async autoBatch(device:any){
+   const user=await this.prisma.user.findUnique({where:{id:device.userId},include:{subscription:true,preferences:true}});
+   if(process.env.COMPANION_AUTO_APPLY_ENABLED!=='true')throw new BadRequestException('Desktop Auto-Apply is not enabled on this deployment.');
+   if(!user||user.activeMode!=='AUTO_APPLY'||!user.autoApplyConsent||!user.subscription?.active||user.subscription.trialEnds<=new Date())throw new BadRequestException('Enable Auto-Apply with an active plan first.');
+   const hosted:any[]=await this.prisma.$queryRaw`SELECT "userId" FROM "AgentPreference" WHERE "userId"=${device.userId} AND "enabled"=true LIMIT 1`;
+   if(hosted.length)throw new BadRequestException('Pause Hosted Agent before enabling desktop processing.');
+   const remaining=await this.remaining(device.userId,user.dailyApplyLimit);
+   if(!remaining)return {runs:[],remaining:0,message:'Daily limit reached. Unconfirmed submissions also reserve a slot.'};
+   // Never replay a click whose result is unknown, or silently restart a form needing input.
+   const pending:any[]=await this.prisma.$queryRaw`SELECT "id","kind","stage","portal" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('CREATED','OPENED') AND ("details"->>'autoSubmit'='true' OR "details"->>'autoDiscover'='true') AND "createdAt">NOW()-INTERVAL '1 hour' ORDER BY "createdAt" ASC LIMIT 30`;
+   if(pending.length)return {runs:pending,remaining};
+   const settings:any[]=await this.prisma.$queryRaw`SELECT "selectedPortals" FROM "User" WHERE "id"=${device.userId}`;
+   const selected=settings[0]?.selectedPortals;
+   const portals=Array.isArray(selected)?selected.filter((p:string)=>!!portalUrls[p]):[];
+   if(!portals.length)return {runs:[],remaining,message:'Select Naukri or LinkedIn in your saved preferences.'};
+   const runs=[];
+   for(const portal of portals){
+     const recent:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "portal"=${portal} AND "kind"='DISCOVER' AND "createdAt">NOW()-INTERVAL '15 minutes' LIMIT 1`;
+     if(recent.length)continue;
+     runs.push(await this.create(device.userId,{kind:'DISCOVER',portal,autoDiscover:true}));
+   }
+   return {runs,remaining,message:runs.length?'Reading selected portal jobs.':'Waiting before the next discovery check.'};
+ }
  async task(device:any,id:string){
    const rows:any[]=await this.prisma.$queryRaw`SELECT * FROM "BrowserRun" WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id}`;
    const run=rows[0];if(!run)throw new NotFoundException('Browser task not found.');
