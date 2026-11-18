@@ -219,7 +219,8 @@ export class CompanionService {
      const employerAlias=sameApplicationPage(run.url,data.url);
      if(new URL(data.url).origin!==new URL(run.url).origin&&!employerAlias)throw new BadRequestException('Report must come from the task portal.');
      const jobPath=(value:string)=>new URL(value).pathname.replace(/\/(apply|thanks|thank-you|confirmation)\/?$/,'').replace(/\/$/,'');
-     if(run.kind==='APPLY'&&jobPath(data.url)!==jobPath(run.url)&&!employerAlias)throw new BadRequestException('The browser is on a different job. Return to the original application.');
+     const isNaukriApplyReturn = new URL(data.url).hostname === 'www.naukri.com' && new URL(data.url).pathname.startsWith('/myapply/');
+      if(run.kind==='APPLY'&&jobPath(data.url)!==jobPath(run.url)&&!employerAlias&&!isNaukriApplyReturn)throw new BadRequestException('The browser is on a different job. Return to the original application.');
      if(Date.now()-new Date(run.createdAt).getTime()>3600000)throw new BadRequestException('Browser task expired.');
      if(stage===run.stage&&['VERIFIED','BROWSER_CONFIRMED'].includes(stage))return {stage};
      if(!(ALLOWED[run.stage]||[]).includes(stage))throw new BadRequestException('Invalid browser task transition.');
@@ -241,7 +242,7 @@ export class CompanionService {
        if(sent+pending.length+hosted.length>=user.dailyApplyLimit)throw new BadRequestException('Daily application limit reached. Pending outcomes also count against the limit.');
      }
      if(stage==='VERIFIED'&&(run.kind!=='VERIFY'||data.evidence?.type!=='SIGNED_IN_MARKER'))throw new BadRequestException('Missing sign-in observation.');
-     if(stage==='BROWSER_CONFIRMED'&&(run.kind!=='APPLY'||data.evidence?.type!=='SUBMISSION_MESSAGE'||typeof data.evidence?.text!=='string'||!/(application (has been |was )?(submitted|received)|thank you for (applying|your application)|successfully applied)/i.test(data.evidence.text)))throw new BadRequestException('Missing employer success message.');
+     if(stage==='BROWSER_CONFIRMED'&&(run.kind!=='APPLY'||data.evidence?.type!=='SUBMISSION_MESSAGE'||typeof data.evidence?.text!=='string'||!/(application (has been |was )?(submitted|received)|thank you for (applying|your application)|successfully applied|applied to \b|applied on naukri)/i.test(data.evidence.text)))throw new BadRequestException('Missing employer success message.');
      // Evidence is a browser observation, not a signed employer API receipt.
      const observed=new URL(data.url);
      const details={...run.details,message:String(data.message||'').slice(0,500),evidence:data.evidence?{type:String(data.evidence.type||'').slice(0,40),text:String(data.evidence.text||'').slice(0,400)}:null,observedUrl:observed.origin+observed.pathname,observationSource:'USER_BROWSER',history:[...(Array.isArray(run.details?.history)?run.details.history:[]).slice(-19),{stage,at:new Date().toISOString()}]};
