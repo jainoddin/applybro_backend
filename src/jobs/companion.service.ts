@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException, UnauthorizedExcepti
 import { createHash, randomBytes, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { trustedApplicationUrl, sameApplicationPage } from './live-sources';
-import { minimumExperience,roleMatches,skillMatch } from './skill-match';
+import { experienceRange,minimumExperience,roleMatches,skillMatch } from './skill-match';
 import { hasSubmissionEvidence } from './application-evidence';
 
 export const portalUrls: Record<string,string> = {
@@ -120,10 +120,9 @@ export class CompanionService {
        if(app.matchScore<user.minMatchScore)throw new BadRequestException('This job is below your saved match threshold.');
        if(m.matchAssessed!==true)throw new BadRequestException('This job needs manual review; insufficient skill evidence for automatic matching.');
        if(typeof m.minimumYears==='number'&&m.minimumYears>0){
-         const years=(user.experience||'').match(/\d+/g)?.map(Number)||[];
-         const lower=years[0]??0,upper=years.length>1?years[1]:/\+/.test(user.experience||'')?Infinity:lower;
-         if(upper<m.minimumYears)throw new BadRequestException(`Employer requires at least ${m.minimumYears} years; saved experience does not meet that minimum.`);
-         if(lower<m.minimumYears)reviewReason=`Confirm you meet the employer's ${m.minimumYears}-year minimum. Your saved experience is a range.`;
+         const experience=experienceRange(user.experience||'');
+         if(experience&&experience.maximum<m.minimumYears)throw new BadRequestException(`Employer requires at least ${m.minimumYears} years; saved experience does not meet that minimum.`);
+         if(!experience||experience.minimum<m.minimumYears)reviewReason=`Confirm your exact experience meets the employer's ${m.minimumYears}-year minimum.`;
        }
      }
      url=m.url;portal=m.source;applicationId=app.id;

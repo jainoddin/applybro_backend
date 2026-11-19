@@ -21,3 +21,19 @@ export function minimumExperience(description:string){
  const match=/(?:at least|minimum(?: of)?|min\.?|requires?)\s+(\d{1,2})(?:\s*[-–]\s*\d{1,2})?\+?\s*(?:years?|yrs?)/i.exec(description);
  return match?Number(match[1]):null;
 }
+
+// Saved years/months are a duration, not the two endpoints of a range.
+// Unknown formats remain unknown instead of silently becoming zero experience.
+export function experienceRange(value:string):{minimum:number;maximum:number}|null{
+ const input=String(value||'').trim();
+ const duration=/^(\d+(?:\.\d+)?)\s*(?:years?|yrs?)(?:\s+(\d{1,2})\s*months?)?$/i.exec(input);
+ if(duration){const months=Number(duration[2]||0);if(months>11)return null;const years=Number(duration[1])+months/12;return {minimum:years,maximum:years};}
+ const months=/^(\d{1,2})\s*months?$/i.exec(input);
+ if(months){const years=Number(months[1])/12;return {minimum:years,maximum:years};}
+ const range=/^(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)$/i.exec(input);
+ if(range){const minimum=Number(range[1]),maximum=Number(range[2]);return maximum>=minimum?{minimum,maximum}:null;}
+ const plus=/^(\d+(?:\.\d+)?)\s*\+\s*(?:years?|yrs?)$/i.exec(input);
+ if(plus)return {minimum:Number(plus[1]),maximum:Infinity};
+ if(/^fresher$/i.test(input))return {minimum:0,maximum:0};
+ return null;
+}
