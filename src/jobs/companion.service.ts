@@ -32,11 +32,12 @@ export class CompanionService {
  constructor(private readonly prisma:PrismaService){}
  private async remaining(userId:string,limit:number){
    const day=new Date(Date.now()+19800000).toISOString().slice(0,10),from=new Date(day+'T00:00:00+05:30');
+   await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='UNKNOWN',"updatedAt"=NOW(),"details"="details" || '{"message":"Submission outcome was not confirmed within 5 minutes."}'::jsonb WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage"='SUBMITTING' AND "updatedAt" < NOW()-INTERVAL '5 minutes'`;
    const applications=await this.prisma.jobApplication.findMany({where:{userId,status:'APPLIED',appliedAt:{gte:from}}});
    const sent=applications.filter(app=>hasSubmissionEvidence(app)).length;
-   const pending:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage" IN ('SUBMITTING','UNKNOWN') AND "updatedAt">=${from}`;
-   const hosted:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "state" IN ('SUBMITTING','UNKNOWN') AND "submitReservedAt">=${from}`;
-   return Math.max(0,limit-sent-pending.length-hosted.length);
+   const inFlight:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage"='SUBMITTING' AND "updatedAt">NOW()-INTERVAL '5 minutes'`;
+   const hosted:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "state"='SUBMITTING' AND "submitReservedAt">NOW()-INTERVAL '5 minutes'`;
+   return Math.max(0,limit-sent-inFlight.length-hosted.length);
  }
  async pair(userId:string){
    const id=randomUUID(), token=randomBytes(32).toString('base64url'), hash=digest(token);
@@ -58,6 +59,7 @@ export class CompanionService {
  }
  async status(userId:string){
    await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='TIMED_OUT',"updatedAt"=NOW(),"details"="details" || '{"message":"Login check timed out. Open the portal and retry; no connection was confirmed."}'::jsonb WHERE "userId"=${userId} AND "kind"='VERIFY' AND "stage" IN ('CREATED','OPENED','LOGIN_REQUIRED') AND "createdAt" < NOW()-INTERVAL '3 minutes'`;
+   await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='UNKNOWN',"updatedAt"=NOW(),"details"="details" || '{"message":"Submission outcome not confirmed within 5 minutes."}'::jsonb WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage"='SUBMITTING' AND "updatedAt" < NOW()-INTERVAL '5 minutes'`;
    const devices:any[]=await this.prisma.$queryRaw`SELECT "id","expiresAt" FROM "BrowserDevice" WHERE "userId"=${userId} AND "revokedAt" IS NULL AND "expiresAt">NOW() ORDER BY "createdAt" DESC`;
    const runs:any[]=await this.prisma.$queryRaw`SELECT "id","deviceId","kind","portal","stage","url","details","updatedAt" FROM "BrowserRun" WHERE "userId"=${userId} ORDER BY "updatedAt" DESC LIMIT 30`;
    const sessions:any[]=await this.prisma.$queryRaw`SELECT DISTINCT ON ("portal") "id","deviceId","kind","portal","stage","updatedAt" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='VERIFY' ORDER BY "portal","updatedAt" DESC`;
