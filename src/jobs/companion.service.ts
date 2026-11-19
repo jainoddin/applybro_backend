@@ -35,8 +35,8 @@ export class CompanionService {
    await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='UNKNOWN',"updatedAt"=NOW(),"details"="details" || '{"message":"Submission outcome was not confirmed within 5 minutes."}'::jsonb WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage"='SUBMITTING' AND "updatedAt" < NOW()-INTERVAL '5 minutes'`;
    const applications=await this.prisma.jobApplication.findMany({where:{userId,status:'APPLIED',appliedAt:{gte:from}}});
    const sent=applications.filter(app=>hasSubmissionEvidence(app)).length;
-   const inFlight:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage"='SUBMITTING' AND "updatedAt">NOW()-INTERVAL '5 minutes'`;
-   const hosted:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "state"='SUBMITTING' AND "submitReservedAt">NOW()-INTERVAL '5 minutes'`;
+   const inFlight:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${userId} AND "kind"='APPLY' AND "stage" IN ('SUBMITTING','UNKNOWN') AND "updatedAt">=${from}`;
+   const hosted:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "state" IN ('SUBMITTING','UNKNOWN') AND "submitReservedAt">=${from}`;
    return Math.max(0,limit-sent-inFlight.length-hosted.length);
  }
  async pair(userId:string){
@@ -167,9 +167,10 @@ export class CompanionService {
    if(['DISCONNECTED','TIMED_OUT'].includes(run.stage))throw new BadRequestException('Portal check ended. Start a new login check from ApplyBro.');
    if(Date.now()-new Date(run.createdAt).getTime()>86400000)throw new BadRequestException('Browser task expired. Start a new run.');
    const user=await this.prisma.user.findUnique({where:{id:device.userId},include:{subscription:true}});
-   const autoAvailable=process.env.COMPANION_AUTO_APPLY_ENABLED==='true'&&user.activeMode==='AUTO_APPLY'&&user.autoApplyConsent&&user.subscription?.active&&user.subscription.trialEnds>new Date()&&await this.remaining(user.id,user.dailyApplyLimit)>0;
+   const remainingSlots=await this.remaining(user.id,user.dailyApplyLimit);
+   const autoAvailable=process.env.COMPANION_AUTO_APPLY_ENABLED==='true'&&user.activeMode==='AUTO_APPLY'&&user.autoApplyConsent&&user.subscription?.active&&user.subscription.trialEnds>new Date()&&remainingSlots>0;
    const files:any[]=run.kind==='APPLY'&&run.details?.resumeId?await this.prisma.$queryRaw`SELECT "fileName","fileBytes","mimeType" FROM "Resume" WHERE "userId"=${device.userId} AND "id"=${run.details.resumeId} AND "fileBytes" IS NOT NULL`:[];
-   return {...run,autoSubmit:run.details?.autoSubmit===true&&autoAvailable,autoDiscover:run.details?.autoDiscover===true&&autoAvailable,autoPrepare:run.details?.autoPrepare===true&&autoAvailable,stopReason:autoAvailable?'':'Auto-Apply is off, the plan expired, or the daily limit was reached.',reviewReason:run.details?.reviewReason||'',
+   return {...run,autoSubmit:run.details?.autoSubmit===true&&autoAvailable,autoDiscover:run.details?.autoDiscover===true&&autoAvailable,autoPrepare:run.details?.autoPrepare===true&&autoAvailable,stopReason:autoAvailable?'':remainingSlots===0?'Daily limit reached. Confirmed and unresolved submission attempts reserve the current daily slots. Check pending outcomes before starting more applications.':'Auto-Apply is off or the plan has expired.',reviewReason:run.details?.reviewReason||'',
      resume:files[0]?{fileName:files[0].fileName,mimeType:files[0].mimeType,base64:Buffer.from(files[0].fileBytes).toString('base64')}:null,
      profile:run.kind==='APPLY'?{name:user.name,email:user.email,phone:user.phone||'',linkedIn:user.linkedIn||'',portfolio:user.portfolio||'',currentTitle:user.currentTitle||'',experience:user.experience||''}:null};
  }
