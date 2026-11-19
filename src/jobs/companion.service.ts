@@ -21,9 +21,9 @@ export function browserJobUrl(value:string){
 }
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
 const ALLOWED:Record<string,string[]>={
- CREATED:['OPENED','FAILED','CANCELLED'], OPENED:['LOGIN_REQUIRED','VERIFIED','REVIEW_REQUIRED','FAILED','CANCELLED'],
+ CREATED:['OPENED','FAILED','CANCELLED'], OPENED:['LOGIN_REQUIRED','VERIFIED','REVIEW_REQUIRED','BROWSER_CONFIRMED','FAILED','CANCELLED'],
  LOGIN_REQUIRED:['LOGIN_REQUIRED','VERIFIED','REVIEW_REQUIRED','FAILED','CANCELLED'],
- REVIEW_REQUIRED:['REVIEW_REQUIRED','SUBMITTING','FAILED','CANCELLED'],
+ REVIEW_REQUIRED:['REVIEW_REQUIRED','SUBMITTING','BROWSER_CONFIRMED','FAILED','CANCELLED'],
  SUBMITTING:['BROWSER_CONFIRMED','UNKNOWN','FAILED'],
  UNKNOWN:['BROWSER_CONFIRMED','CANCELLED'],
 };
@@ -243,7 +243,12 @@ export class CompanionService {
        if(sent+pending.length+hosted.length>=user.dailyApplyLimit)throw new BadRequestException('Daily application limit reached. Pending outcomes also count against the limit.');
      }
      if(stage==='VERIFIED'&&(run.kind!=='VERIFY'||data.evidence?.type!=='SIGNED_IN_MARKER'))throw new BadRequestException('Missing sign-in observation.');
-     if(stage==='BROWSER_CONFIRMED'&&(run.kind!=='APPLY'||data.evidence?.type!=='SUBMISSION_MESSAGE'||typeof data.evidence?.text!=='string'||!/(application (has been |was )?(submitted|received)|thank you for (applying|your application)|successfully applied|applied to \b|applied on naukri)/i.test(data.evidence.text)))throw new BadRequestException('Missing employer success message.');
+     if(stage==='BROWSER_CONFIRMED'){
+       if(run.kind!=='APPLY')throw new BadRequestException('This is not an application task.');
+       const evidenceText=data.evidence?.text||data.confirmation||data.message||'';
+       if(!/(application (has been |was )?(submitted|received)|thank you for (applying|your application)|successfully applied|applied to \b|applied on naukri|already applied|^applied)/i.test(evidenceText))throw new BadRequestException('Missing employer success message.');
+       if(!data.evidence)data.evidence={type:'SUBMISSION_MESSAGE',text:evidenceText};
+     }
      // Evidence is a browser observation, not a signed employer API receipt.
      const observed=new URL(data.url);
      const details={...run.details,message:String(data.message||'').slice(0,500),evidence:data.evidence?{type:String(data.evidence.type||'').slice(0,40),text:String(data.evidence.text||'').slice(0,400)}:null,observedUrl:observed.origin+observed.pathname,observationSource:'USER_BROWSER',history:[...(Array.isArray(run.details?.history)?run.details.history:[]).slice(-19),{stage,at:new Date().toISOString()}]};
