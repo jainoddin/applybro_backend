@@ -10,7 +10,7 @@ export function whatsAppPhone(value:unknown){
  return value.slice(1);
 }
 export function answerableField(field:any){
- return !!field&&['INPUT','TEXTAREA'].includes(field.tag)&&!['file','password','hidden','checkbox','radio','submit','button'].includes(field.type)&&typeof field.label==='string'&&field.label.trim().length>2&&!/password|otp|one.time|captcha|verification|security.code|social.security|credit.card|bank.account/i.test(field.label);
+ return !!field&&['INPUT','TEXTAREA','SELECT'].includes(String(field.tag||'').toUpperCase())&&!['file','password','hidden','checkbox','submit','button'].includes(String(field.type||'').toLowerCase())&&typeof field.label==='string'&&field.label.trim().length>2&&!/password|otp|one.time|captcha|verification|security.code|social.security|credit.card|bank.account/i.test(field.label);
 }
 export function matchingQuestionField(saved:any,current:any[],url:string){
  if(saved.url!==url)return null;

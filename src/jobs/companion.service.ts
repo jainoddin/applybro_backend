@@ -144,6 +144,8 @@ export class CompanionService {
    if(hosted.length)throw new BadRequestException('Pause Hosted Agent before enabling desktop processing.');
    const remaining=await this.remaining(device.userId,user.dailyApplyLimit);
    if(!remaining)return {runs:[],remaining:0,message:'Daily limit reached. Unconfirmed submissions also reserve a slot.'};
+   const readyToSubmit:any[]=await this.prisma.$queryRaw`SELECT "id","kind","stage","portal" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage"='REVIEW_REQUIRED' AND "kind"='APPLY' AND "details"->'answers' IS NOT NULL AND "createdAt">NOW()-INTERVAL '7 days' ORDER BY "updatedAt" ASC LIMIT 5`;
+   if(readyToSubmit.length)return {runs:readyToSubmit,remaining,message:'Resuming applications with confirmed WhatsApp answers.'};
    // Never replay a click whose result is unknown, or silently restart a form needing input.
    const pending:any[]=await this.prisma.$queryRaw`SELECT "id","kind","stage","portal" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('CREATED','OPENED') AND ("details"->>'autoSubmit'='true' OR "details"->>'autoDiscover'='true') AND "createdAt">NOW()-INTERVAL '24 hours' ORDER BY "createdAt" ASC LIMIT 30`;
    if(pending.length)return {runs:pending,remaining};
@@ -253,7 +255,7 @@ export class CompanionService {
      }
      // Evidence is a browser observation, not a signed employer API receipt.
      const observed=new URL(data.url);
-     const details={...run.details,message:String(data.message||'').slice(0,500),evidence:data.evidence?{type:String(data.evidence.type||'').slice(0,40),text:String(data.evidence.text||'').slice(0,400)}:null,observedUrl:observed.origin+observed.pathname,observationSource:'USER_BROWSER',history:[...(Array.isArray(run.details?.history)?run.details.history:[]).slice(-19),{stage,at:new Date().toISOString()}]};
+     const details={...run.details,message:String(data.message||'').slice(0,500),evidence:data.evidence?{type:String(data.evidence.type||'').slice(0,40),text:String(data.evidence.text||'').slice(0,400)}:null,missingFields:Array.isArray(data.missingFields)?data.missingFields.slice(0,10):run.details?.missingFields,needsInput:data.needsInput===true,parkedReason:data.needsInput===true?'WAITING_USER_INPUT':run.details?.parkedReason,parkedAt:data.needsInput===true?new Date().toISOString():run.details?.parkedAt,observedUrl:observed.origin+observed.pathname,observationSource:'USER_BROWSER',history:[...(Array.isArray(run.details?.history)?run.details.history:[]).slice(-19),{stage,at:new Date().toISOString()}]};
      await tx.$executeRaw`UPDATE "BrowserRun" SET "stage"=${stage},"details"=${JSON.stringify(details)}::jsonb,"updatedAt"=NOW() WHERE "id"=${id}`;
      if(stage==='BROWSER_CONFIRMED'){
        const app=await tx.jobApplication.findFirst({where:{id:run.applicationId,userId:device.userId}});

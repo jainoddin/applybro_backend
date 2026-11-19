@@ -71,12 +71,16 @@ export class WhatsAppService {
   if(!rows[0])return null;const saved=unseal(rows[0].encrypted);
   return saved.identity?.key===identity.key&&typeof saved.value==='string'?{key:identity.key,value:saved.value}:null;
  }
- // Only the hosted worker calls this method; never let a client create arbitrary recipient messages.
+ // Only the hosted worker or companion batch resolver calls this method; never let a client create arbitrary recipient messages.
  async ask(run:any,field:any,url:string,context:any={}){
-  if(!this.configured()||!process.env.WHATSAPP_TEMPLATE_NAME||run.kind!=='APPLY'||!answerableField(field))return null;
+  if(!this.configured()||!process.env.WHATSAPP_TEMPLATE_NAME||run.kind!=='APPLY')return null;
+  const fieldList = Array.isArray(field) ? field : [field];
+  const validFields = fieldList.filter(f => answerableField(f));
+  if(!validFields.length)return null;
   const contacts:any[]=await this.db.$queryRaw`SELECT "encrypted" FROM "WhatsAppContact" WHERE "userId"=${run.userId} AND "verifiedAt" IS NOT NULL`;
   if(!contacts[0])return null;
-  const id=randomUUID(),expires=new Date(Date.now()+300000),data=seal({field,url,context:{url,company:context.company,title:context.title}});
+  const id=randomUUID(),expires=new Date(Date.now()+600000);
+  const data=seal({field:validFields[0],fields:validFields,url,context:{url,company:context.company,title:context.title}});
   const activeAgent:any[]=await this.db.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "id"=${run.id} AND "userId"=${run.userId} AND "state"='WAITING_USER'`;
   const activeBrowser:any[]=activeAgent[0]?[]:await this.db.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "id"=${run.id} AND "userId"=${run.userId} AND "stage" IN ('REVIEW_REQUIRED','OPENED','SUBMITTING')`;
   if(!activeAgent[0]&&!activeBrowser[0])return null;
@@ -84,7 +88,23 @@ export class WhatsAppService {
   await this.db.$executeRaw`UPDATE "WhatsAppQuestion" SET "state"='SENDING' WHERE "id"=${id}`;
   try{
    const version=process.env.WHATSAPP_API_VERSION;if(!/^v\d+\.\d+$/.test(version||''))throw Error();
-   const response=await fetch(`https://graph.facebook.com/${version}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,{method:'POST',headers:{Authorization:`Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,'Content-Type':'application/json'},signal:AbortSignal.timeout(10000),body:JSON.stringify({messaging_product:'whatsapp',to:unseal(contacts[0].encrypted).phone,type:'template',template:{name:process.env.WHATSAPP_TEMPLATE_NAME,language:{code:process.env.WHATSAPP_TEMPLATE_LANGUAGE||'en_US'},components:[{type:'body',parameters:[{type:'text',text:field.label.slice(0,200)},{type:'text',text:id}]}]}})});
+   let promptText = '';
+   if(validFields.length === 1){
+     const f = validFields[0];
+     if(f.options?.length){
+       promptText = `${f.label.slice(0,100)} [Options: ${f.options.slice(0,5).join(', ')}]`;
+     }else{
+       promptText = f.label.slice(0,200);
+     }
+   }else{
+     promptText = validFields.map((f,i)=>{
+       if(f.options?.length){
+         return `${i+1}. ${f.label.slice(0,70)} (${f.options.slice(0,3).join('/')})`;
+       }
+       return `${i+1}. ${f.label.slice(0,70)}`;
+     }).join('; ').slice(0,200);
+   }
+   const response=await fetch(`https://graph.facebook.com/${version}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`,{method:'POST',headers:{Authorization:`Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,'Content-Type':'application/json'},signal:AbortSignal.timeout(10000),body:JSON.stringify({messaging_product:'whatsapp',to:unseal(contacts[0].encrypted).phone,type:'template',template:{name:process.env.WHATSAPP_TEMPLATE_NAME,language:{code:process.env.WHATSAPP_TEMPLATE_LANGUAGE||'en_US'},components:[{type:'body',parameters:[{type:'text',text:promptText},{type:'text',text:id}]}]}})});
    const result:any=await response.json();const messageId=result.messages?.[0]?.id;
    if(!response.ok||typeof messageId!=='string')throw Error();
    await this.db.$executeRaw`UPDATE "WhatsAppQuestion" SET "state"='ACCEPTED',"messageId"=${messageId} WHERE "id"=${id} AND "state"='SENDING'`;
@@ -96,8 +116,12 @@ export class WhatsAppService {
   for(const entry of body.entry||[])for(const change of entry.changes||[]){
    const value=change.value;if(value?.metadata?.phone_number_id!==process.env.WHATSAPP_PHONE_NUMBER_ID)continue;
    for(const message of value.messages||[]){
-    if(message.type!=='text'||typeof message.id!=='string'||typeof message.from!=='string'||typeof message.text?.body!=='string')continue;
-    const text=message.text.body.trim();if(!text||text.length>2000)continue;
+    let text = '';
+    if(message.type==='text'&&typeof message.text?.body==='string') text = message.text.body.trim();
+    else if(message.type==='interactive') {
+      text = String(message.interactive?.button_reply?.title || message.interactive?.list_reply?.title || message.interactive?.button_reply?.id || '').trim();
+    }
+    if(!text||typeof message.id!=='string'||typeof message.from!=='string'||text.length>2000)continue;
     if(this.otp?.accept(message))continue;
     await this.db.$transaction(async tx=>{
      const inserted=await tx.$executeRaw`INSERT INTO "WhatsAppInbound"("id") VALUES (${message.id}) ON CONFLICT DO NOTHING`;if(!inserted)return;
@@ -106,23 +130,29 @@ export class WhatsAppService {
      if(pairing){await tx.$executeRaw`UPDATE "WhatsAppContact" SET "verifiedAt"=NOW(),"pairHash"=NULL,"pairExpires"=NULL WHERE "phoneHash"=${phoneHash} AND "pairHash"=${tokenHash(pairing[1])} AND "pairExpires">NOW()`;return;}
      let rows:any[]=[];
      if(typeof message.context?.id==='string'){
-       rows=await tx.$queryRaw`SELECT q."id", q."runId", q."userId", q."encrypted" FROM "WhatsAppQuestion" q JOIN "WhatsAppContact" c ON c."userId"=q."userId" WHERE c."phoneHash"=${phoneHash} AND c."verifiedAt" IS NOT NULL AND q."messageId"=${message.context.id} AND q."state"='ACCEPTED' AND q."expiresAt">NOW() FOR UPDATE OF q`;
+       rows=await tx.$queryRaw`SELECT q."id", q."runId", q."userId", q."encrypted" FROM "WhatsAppQuestion" q JOIN "WhatsAppContact" c ON c."userId"=q."userId" WHERE c."phoneHash"=${phoneHash} AND c."verifiedAt" IS NOT NULL AND q."messageId"=${message.context.id} AND (q."expiresAt">NOW() OR q."state"='TIMEOUT_PARKED') FOR UPDATE OF q`;
      }
      if(!rows[0]){
-       rows=await tx.$queryRaw`SELECT q."id", q."runId", q."userId", q."encrypted" FROM "WhatsAppQuestion" q JOIN "WhatsAppContact" c ON c."userId"=q."userId" WHERE c."phoneHash"=${phoneHash} AND c."verifiedAt" IS NOT NULL AND q."state"='ACCEPTED' AND q."expiresAt">NOW() ORDER BY q."expiresAt" DESC LIMIT 1 FOR UPDATE OF q`;
+       rows=await tx.$queryRaw`SELECT q."id", q."runId", q."userId", q."encrypted" FROM "WhatsAppQuestion" q JOIN "WhatsAppContact" c ON c."userId"=q."userId" WHERE c."phoneHash"=${phoneHash} AND c."verifiedAt" IS NOT NULL AND (q."expiresAt">NOW() OR q."state"='TIMEOUT_PARKED') ORDER BY q."expiresAt" DESC LIMIT 1 FOR UPDATE OF q`;
      }
      if(rows[0]){
        const q=rows[0];
-       await tx.$executeRaw`UPDATE "WhatsAppQuestion" SET "state"='ANSWERED',"answer"=${seal({value:text})},"answeredAt"=NOW() WHERE "id"=${q.id} AND "state"='ACCEPTED'`;
+       await tx.$executeRaw`UPDATE "WhatsAppQuestion" SET "state"='ANSWERED',"answer"=${seal({value:text})},"answeredAt"=NOW() WHERE "id"=${q.id}`;
        let qData:any=null;try{qData=unseal(q.encrypted);}catch{}
-       if(qData?.field)await this.remember(q.userId,qData.field,text,qData.context);
-       const bRuns:any[]=await tx.$queryRaw`SELECT "id","details" FROM "BrowserRun" WHERE "id"=${q.runId}`;
+       const bRuns:any[]=q.runId?await this.db.$queryRaw`SELECT "id","details" FROM "BrowserRun" WHERE "id"=${q.runId}`:[];
        if(bRuns[0]){
-         const fieldLabel=qData?.field?.label||'answer';
          const details=bRuns[0].details||{};
          const answers=details.answers||{};
-         answers[fieldLabel]=text;
-         const updatedDetails={...details,answers,message:`Received WhatsApp answer for ${fieldLabel}. Resuming application.`};
+         if(Array.isArray(qData?.fields)){
+           for(const f of qData.fields){
+             answers[f.label]=text;
+             await this.remember(q.userId,f,text,qData.context);
+           }
+         }else if(qData?.field){
+           answers[qData.field.label]=text;
+           await this.remember(q.userId,qData.field,text,qData.context);
+         }
+         const updatedDetails={...details,answers,message:`Received WhatsApp answer. Resuming application.`};
          await tx.$executeRaw`UPDATE "BrowserRun" SET "details"=${JSON.stringify(updatedDetails)}::jsonb,"stage"='REVIEW_REQUIRED',"updatedAt"=NOW() WHERE "id"=${q.runId}`;
        }
      }
