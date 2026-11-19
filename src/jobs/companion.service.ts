@@ -79,7 +79,7 @@ export class CompanionService {
    return {disconnected:true};
  }
  async clearStale(userId:string){
-    const count=await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='CANCELLED',"updatedAt"=NOW() WHERE "userId"=${userId} AND "stage" IN ('CREATED','OPENED','LOGIN_REQUIRED','REVIEW_REQUIRED','UNKNOWN')`;
+    const count=await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='CANCELLED',"updatedAt"=NOW() WHERE "userId"=${userId} AND "stage" IN ('CREATED','OPENED','LOGIN_REQUIRED','REVIEW_REQUIRED')`;
     return {cleared:count};
   }
   async cancel(userId:string,id:string){
@@ -249,8 +249,10 @@ export class CompanionService {
      if(stage==='VERIFIED'&&(run.kind!=='VERIFY'||data.evidence?.type!=='SIGNED_IN_MARKER'))throw new BadRequestException('Missing sign-in observation.');
      if(stage==='BROWSER_CONFIRMED'){
        if(run.kind!=='APPLY')throw new BadRequestException('This is not an application task.');
+       if(!['SUBMITTING','UNKNOWN'].includes(run.stage))throw new BadRequestException('No submission attempt was recorded for this application.');
        const evidenceText=data.evidence?.text||data.confirmation||data.message||'';
-       if(!/(application (has been |was )?(submitted|received)|thank you for (applying|your application)|successfully applied|applied to \b|applied on naukri|already applied|^applied)/i.test(evidenceText))throw new BadRequestException('Missing employer success message.');
+       if(/already applied/i.test(evidenceText))throw new BadRequestException('An existing application is not a new submission.');
+       if(!/(application (has been |was )?(submitted|received)|thank you for (applying|your application)|successfully applied|applied to \b)/i.test(evidenceText))throw new BadRequestException('Missing employer success message.');
        if(!data.evidence)data.evidence={type:'SUBMISSION_MESSAGE',text:evidenceText};
      }
      // Evidence is a browser observation, not a signed employer API receipt.
