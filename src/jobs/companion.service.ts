@@ -178,20 +178,38 @@ export class CompanionService {
  async importJobs(device:any,id:string,data:any){
    const task=await this.task(device,id);
    if(task.kind!=='DISCOVER'||!['OPENED','REVIEW_REQUIRED'].includes(task.stage)||!Array.isArray(data.jobs)||data.jobs.length>30)throw new BadRequestException('Invalid discovery report.');
-   let imported=0;const inspectRuns=[];
    const user=await this.prisma.user.findUnique({where:{id:device.userId},include:{preferences:true}});
+   const listings=new Map<string,any>();
    for(const row of data.jobs){
      if(typeof row.url!=='string'||!browserJobUrl(row.url)||new URL(row.url).origin!==new URL(task.url).origin||typeof row.title!=='string'||!row.title.trim())throw new BadRequestException('Invalid portal listing.');
      const parsed=new URL(row.url);parsed.search='';parsed.hash='';const url=parsed.href;
      const jobId=digest(device.userId+':'+url);
      const metadata={version:'browser-listing-v1',url,source:task.portal,location:String(row.location||'See job details').slice(0,150),skills:[],reasons:['Live job link observed in your browser. Review the full job requirements before applying.'],checkedAt:new Date().toISOString()};
-     await this.prisma.jobApplication.upsert({where:{id:jobId},create:{id:jobId,userId:device.userId,jobTitle:row.title.slice(0,200),companyName:String(row.company||task.portal).slice(0,150),portal:task.portal==='Naukri.com'?'NAUKRI':'LINKEDIN',matchScore:0,matchReasons:metadata,applyMode:'ASSISTED_APPLY'},update:{jobTitle:row.title.slice(0,200)}});imported++;
-     if(task.autoDiscover&&inspectRuns.length<Math.min(15,user.dailyApplyLimit*3)&&roleMatches(row.title,user.preferences?.titles||[])){
-       try{inspectRuns.push(await this.create(device.userId,{kind:'INSPECT',applicationId:jobId,autoDiscover:true}));}catch{}
-     }
+     listings.set(jobId,{id:jobId,url,jobTitle:row.title.slice(0,200),companyName:String(row.company||task.portal).slice(0,150),matchReasons:metadata});
    }
-   if(task.autoDiscover)await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='DISCOVERED',"updatedAt"=NOW() WHERE "id"=${id}`;
-   return {imported,inspectRuns};
+   // Thirty listings previously caused hundreds of sequential DB round trips,
+   // outliving the companion's request deadline. Validate first, then save the
+   // listing batch and inspection queue atomically with a fixed query count.
+   const rows=[...listings.values()],payload=JSON.stringify(rows);
+   const inspections=JSON.stringify(task.autoDiscover?rows.filter(row=>roleMatches(row.jobTitle,user.preferences?.titles||[])).slice(0,Math.min(15,user.dailyApplyLimit*3)).map(row=>({id:randomUUID(),applicationId:row.id,url:row.url})):[]);
+   return this.prisma.$transaction(async tx=>{
+     const locked:any[]=await tx.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('OPENED','REVIEW_REQUIRED') FOR UPDATE`;
+     if(!locked.length)throw new BadRequestException('This discovery has finished or was cancelled.');
+     await tx.$executeRaw`INSERT INTO "JobApplication" ("id","userId","jobTitle","companyName","portal","matchScore","matchReasons","applyMode","updatedAt")
+       SELECT row.id,${device.userId},row."jobTitle",row."companyName",${task.portal==='Naukri.com'?'NAUKRI':'LINKEDIN'}::"PortalType",0,row."matchReasons",'ASSISTED_APPLY'::"ApplyMode",NOW()
+       FROM jsonb_to_recordset(${payload}::jsonb) AS row(id text,"jobTitle" text,"companyName" text,"matchReasons" jsonb)
+       ON CONFLICT ("id") DO UPDATE SET "jobTitle"=EXCLUDED."jobTitle","updatedAt"=NOW()`;
+     const inspectRuns:any[]=await tx.$queryRaw`INSERT INTO "BrowserRun" ("id","userId","deviceId","kind","portal","url","applicationId","details")
+       SELECT row.id,${device.userId},${device.id},'INSPECT',${task.portal},row.url,row."applicationId",'{"autoSubmit":false,"autoDiscover":true,"autoPrepare":false,"resumeId":null,"reviewReason":""}'::jsonb
+       FROM jsonb_to_recordset(${inspections}::jsonb) AS row(id text,"applicationId" text,url text)
+       WHERE EXISTS (SELECT 1 FROM "BrowserDevice" d JOIN "User" u ON u.id=d."userId" JOIN "Subscription" s ON s."userId"=u.id WHERE d.id=${device.id} AND d."userId"=${device.userId} AND d."revokedAt" IS NULL AND d."expiresAt">NOW() AND u."activeMode"='AUTO_APPLY' AND u."autoApplyConsent"=true AND s.active=true AND s."trialEnds">NOW())
+       AND EXISTS (SELECT 1 FROM "JobApplication" a WHERE a.id=row."applicationId" AND a."userId"=${device.userId} AND a.status<>'APPLIED')
+       AND NOT EXISTS (SELECT 1 FROM "BrowserRun" r WHERE r."userId"=${device.userId} AND r."applicationId"=row."applicationId" AND r.stage IN ('CREATED','OPENED','REVIEW_REQUIRED','SUBMITTING','UNKNOWN'))
+       AND NOT EXISTS (SELECT 1 FROM "AgentRun" a WHERE a."userId"=${device.userId} AND a."applicationId"=row."applicationId" AND a.state IN ('QUEUED','RUNNING','WAITING_USER','SUBMITTING','UNKNOWN','CONFIRMED'))
+       ON CONFLICT DO NOTHING RETURNING "id","kind","portal","url"`;
+     if(task.autoDiscover)await tx.$executeRaw`UPDATE "BrowserRun" SET "stage"='DISCOVERED',"updatedAt"=NOW() WHERE "id"=${id}`;
+     return {imported:rows.length,inspectRuns};
+   },{timeout:10000});
  }
  async observeJob(device:any,data:any,inspectionId?:string){
    if(typeof data?.url!=='string'||!browserJobUrl(data.url)||typeof data.title!=='string'||!data.title.trim()||typeof data.description!=='string'||data.description.length<120||data.description.length>50000)throw new BadRequestException('A supported job page and its description are required.');
