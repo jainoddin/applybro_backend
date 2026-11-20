@@ -40,6 +40,20 @@ test('microsecond read timeout recovers without overriding newer reports or any 
    const result=await raced.task(device,'fixture-read');assert.equal(result.stage,race==='complete'?'DISCOVERED':'OPENED');
    if(race==='question')assert.equal(result.details.needsInput,true);
   }
+  for(const stage of ['OPENED','REVIEW_REQUIRED','SUBMITTING','UNKNOWN']){
+   await reset('APPLY',stage);await tx.$executeRaw`UPDATE "BrowserRun" SET details=details||'{"autoSubmit":true}'::jsonb`;
+   const result=await service.task(device,'fixture-read');
+   assert.equal(result.stage,['OPENED','REVIEW_REQUIRED'].includes(stage)?'REVIEW_REQUIRED':stage);
+   assert.equal(result.details.needsInput,['OPENED','REVIEW_REQUIRED'].includes(stage));
+  }
+  await reset('APPLY','REVIEW_REQUIRED');await tx.$executeRaw`UPDATE "BrowserRun" SET details=details||'{"autoSubmit":true}'::jsonb`;
+  let first=true;
+  const submitting=new CompanionService({user:{findUnique:async()=>({id:'fixture-owner',dailyApplyLimit:6})},$queryRaw:async(...args)=>{
+   const result=await tx.$queryRaw(...args);
+   if(first&&args[0].join('?').startsWith('SELECT * FROM "BrowserRun"')){first=false;await tx.$executeRaw`UPDATE "BrowserRun" SET stage='SUBMITTING',"updatedAt"=NOW()`;}
+   return result;
+  }});submitting.remaining=async()=>5;
+  assert.equal((await submitting.task(device,'fixture-read')).stage,'SUBMITTING','concurrent reservation cannot be parked as a preparation error');
   console.log('TEMP DB WATCHDOG: reproduced microsecond mismatch; DISCOVER/INSPECT recover; APPLY/UNKNOWN/questions and concurrent updates preserved; rollback enforced.');
   throw rollback;
  },{timeout:30000});}catch(error){if(error!==rollback)throw error;}finally{await db.$disconnect();}

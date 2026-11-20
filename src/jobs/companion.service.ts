@@ -177,6 +177,14 @@ export class CompanionService {
      if(expired[0])Object.assign(run,expired[0]);
      else {const refreshed:any[]=await this.prisma.$queryRaw`SELECT * FROM "BrowserRun" WHERE "id"=${run.id} AND "userId"=${device.userId} AND "deviceId"=${device.id}`;if(refreshed[0])Object.assign(run,refreshed[0]);}
    }
+   if(run.kind==='APPLY'&&run.details?.autoSubmit===true&&['OPENED','REVIEW_REQUIRED'].includes(run.stage)&&run.details?.needsInput!==true&&Date.now()-new Date(run.updatedAt).getTime()>300000){
+     // An automatic preparation error can lose its browser report. Park this
+     // pre-submit task for review, without marking it sent/failed or retrying.
+     // A concurrent submission reservation must win the atomic stage check.
+     const parked:any[]=await this.prisma.$queryRaw`UPDATE "BrowserRun" SET "stage"='REVIEW_REQUIRED',"updatedAt"=NOW(),"details"="details" || '{"needsInput":true,"message":"This application stopped reporting before submission was recorded. Check this job before resuming; other queued tasks can continue."}'::jsonb WHERE "id"=${run.id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "kind"='APPLY' AND "stage" IN ('OPENED','REVIEW_REQUIRED') AND "details"->>'autoSubmit'='true' AND ("details"->>'needsInput') IS DISTINCT FROM 'true' AND "updatedAt"<NOW()-INTERVAL '5 minutes' RETURNING *`;
+     if(parked[0])Object.assign(run,parked[0]);
+     else {const refreshed:any[]=await this.prisma.$queryRaw`SELECT * FROM "BrowserRun" WHERE "id"=${run.id} AND "userId"=${device.userId} AND "deviceId"=${device.id}`;if(refreshed[0])Object.assign(run,refreshed[0]);}
+   }
    if(['DISCONNECTED','TIMED_OUT'].includes(run.stage))throw new BadRequestException('Portal check ended. Start a new login check from ApplyBro.');
    if(Date.now()-new Date(run.createdAt).getTime()>86400000)throw new BadRequestException('Browser task expired. Start a new run.');
    const user=await this.prisma.user.findUnique({where:{id:device.userId},include:{subscription:true}});
