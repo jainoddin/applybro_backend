@@ -165,6 +165,14 @@ export class CompanionService {
  async task(device:any,id:string){
    const rows:any[]=await this.prisma.$queryRaw`SELECT * FROM "BrowserRun" WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id}`;
    const run=rows[0];if(!run)throw new NotFoundException('Browser task not found.');
+   // A lost content-script response must not hold every other portal forever.
+   // Only read-only discovery/inspection can expire here. Never infer the
+   // outcome of an APPLY task, or dismiss a question explicitly needing input.
+   if(['DISCOVER','INSPECT'].includes(run.kind)&&run.details?.autoDiscover===true&&['OPENED','REVIEW_REQUIRED'].includes(run.stage)&&run.details?.needsInput!==true&&Date.now()-new Date(run.updatedAt).getTime()>300000){
+     const expired:any[]=await this.prisma.$queryRaw`UPDATE "BrowserRun" SET "stage"='FAILED',"updatedAt"=NOW(),"details"="details" || '{"message":"This portal read stopped responding for 5 minutes. Other queued jobs can continue; no application was submitted by this check."}'::jsonb WHERE "id"=${run.id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "updatedAt"=${run.updatedAt} AND "stage" IN ('OPENED','REVIEW_REQUIRED') RETURNING *`;
+     if(expired[0])Object.assign(run,expired[0]);
+     else {const refreshed:any[]=await this.prisma.$queryRaw`SELECT * FROM "BrowserRun" WHERE "id"=${run.id} AND "userId"=${device.userId} AND "deviceId"=${device.id}`;if(refreshed[0])Object.assign(run,refreshed[0]);}
+   }
    if(['DISCONNECTED','TIMED_OUT'].includes(run.stage))throw new BadRequestException('Portal check ended. Start a new login check from ApplyBro.');
    if(Date.now()-new Date(run.createdAt).getTime()>86400000)throw new BadRequestException('Browser task expired. Start a new run.');
    const user=await this.prisma.user.findUnique({where:{id:device.userId},include:{subscription:true}});
