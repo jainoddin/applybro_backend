@@ -169,7 +169,11 @@ export class CompanionService {
    // Only read-only discovery/inspection can expire here. Never infer the
    // outcome of an APPLY task, or dismiss a question explicitly needing input.
    if(['DISCOVER','INSPECT'].includes(run.kind)&&run.details?.autoDiscover===true&&['OPENED','REVIEW_REQUIRED'].includes(run.stage)&&run.details?.needsInput!==true&&Date.now()-new Date(run.updatedAt).getTime()>300000){
-     const expired:any[]=await this.prisma.$queryRaw`UPDATE "BrowserRun" SET "stage"='FAILED',"updatedAt"=NOW(),"details"="details" || '{"message":"This portal read stopped responding for 5 minutes. Other queued jobs can continue; no application was submitted by this check."}'::jsonb WHERE "id"=${run.id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "updatedAt"=${run.updatedAt} AND "stage" IN ('OPENED','REVIEW_REQUIRED') RETURNING *`;
+     // PostgreSQL NOW() keeps microseconds; JavaScript Date loses them. An
+     // equality check against run.updatedAt never matched those live rows.
+     // Recheck eligibility atomically using database time instead: a newer
+     // report, completion, or request for user input must win this race.
+     const expired:any[]=await this.prisma.$queryRaw`UPDATE "BrowserRun" SET "stage"='FAILED',"updatedAt"=NOW(),"details"="details" || '{"message":"This portal read stopped responding for 5 minutes. Other queued jobs can continue; no application was submitted by this check."}'::jsonb WHERE "id"=${run.id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "kind" IN ('DISCOVER','INSPECT') AND "stage" IN ('OPENED','REVIEW_REQUIRED') AND "details"->>'autoDiscover'='true' AND ("details"->>'needsInput') IS DISTINCT FROM 'true' AND "updatedAt"<NOW()-INTERVAL '5 minutes' RETURNING *`;
      if(expired[0])Object.assign(run,expired[0]);
      else {const refreshed:any[]=await this.prisma.$queryRaw`SELECT * FROM "BrowserRun" WHERE "id"=${run.id} AND "userId"=${device.userId} AND "deviceId"=${device.id}`;if(refreshed[0])Object.assign(run,refreshed[0]);}
    }
