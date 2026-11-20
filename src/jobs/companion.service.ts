@@ -154,7 +154,9 @@ export class CompanionService {
    if(!portals.length)return {runs:[],remaining,message:'Select Naukri or LinkedIn in your saved preferences.'};
    const runs=[];
    for(const portal of portals){
-     const recent:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "portal"=${portal} AND "kind"='DISCOVER' AND "createdAt">NOW()-INTERVAL '15 minutes' LIMIT 1`;
+     // Pairing cancels unfinished tasks on the previous device. Those searches
+     // cannot run anymore and must not delay the newly paired browser.
+     const recent:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "portal"=${portal} AND "kind"='DISCOVER' AND "stage"<>'CANCELLED' AND "createdAt">NOW()-INTERVAL '15 minutes' LIMIT 1`;
      if(recent.length)continue;
      runs.push(await this.create(device.userId,{kind:'DISCOVER',portal,autoDiscover:true}));
    }
