@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { trustedApplicationUrl, sameApplicationPage } from './live-sources';
 import { experienceRange,minimumExperience,roleMatches,skillMatch } from './skill-match';
 import { hasSubmissionEvidence } from './application-evidence';
+import {validListingTitle} from './listing-title';
 
 export const portalUrls: Record<string,string> = {
   'Naukri.com':'https://www.naukri.com/mnjuser/profile',
@@ -106,7 +107,7 @@ export class CompanionService {
      if(!sub?.active || sub.trialEnds<=new Date())throw new BadRequestException('Your plan has expired. Choose a plan before starting an application.');
      const app=await this.prisma.jobApplication.findFirst({where:{id:data.applicationId||'',userId}});
      const m:any=app?.matchReasons;
-     if(!app||!['official-feed-v1','browser-listing-v1'].includes(m?.version)||!browserJobUrl(m.url))throw new NotFoundException('Live employer application not found.');
+     if(!app||!validListingTitle(app.jobTitle)||!['official-feed-v1','browser-listing-v1'].includes(m?.version)||!browserJobUrl(m.url))throw new NotFoundException('Live employer application not found.');
      if(app.status==='APPLIED')throw new BadRequestException('This job already has a recorded submission.');
      const hosted:any[]=await this.prisma.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "userId"=${userId} AND "applicationId"=${app.id} AND "state" IN ('QUEUED','RUNNING','WAITING_USER','SUBMITTING','UNKNOWN','CONFIRMED') LIMIT 1`;
      if(hosted.length)throw new BadRequestException('This job already has a hosted browser task. Open Hosted Agent to review it.');
@@ -202,6 +203,7 @@ export class CompanionService {
    const listings=new Map<string,any>();
    for(const row of data.jobs){
      if(typeof row.url!=='string'||!browserJobUrl(row.url)||new URL(row.url).origin!==new URL(task.url).origin||typeof row.title!=='string'||!row.title.trim())throw new BadRequestException('Invalid portal listing.');
+     if(!validListingTitle(row.title))continue;
      const parsed=new URL(row.url);parsed.search='';parsed.hash='';const url=parsed.href;
      const jobId=digest(device.userId+':'+url);
      const metadata={version:'browser-listing-v1',url,source:task.portal,location:String(row.location||'See job details').slice(0,150),skills:[],reasons:['Live job link observed in your browser. Review the full job requirements before applying.'],checkedAt:new Date().toISOString()};
@@ -211,6 +213,7 @@ export class CompanionService {
    // outliving the companion's request deadline. Validate first, then save the
    // listing batch and inspection queue atomically with a fixed query count.
    const rows=[...listings.values()],payload=JSON.stringify(rows);
+   if(!rows.length)throw new BadRequestException('No supported job titles were found. Portal action links were not imported as jobs.');
    const inspections=JSON.stringify(task.autoDiscover?rows.filter(row=>roleMatches(row.jobTitle,user.preferences?.titles||[])).slice(0,Math.min(15,user.dailyApplyLimit*3)).map(row=>({id:randomUUID(),applicationId:row.id,url:row.url})):[]);
    return this.prisma.$transaction(async tx=>{
      const locked:any[]=await tx.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('OPENED','REVIEW_REQUIRED') FOR UPDATE`;

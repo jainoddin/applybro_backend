@@ -7,10 +7,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { LiveSources, trustedApplicationUrl } from './live-sources';
 import { browserJobUrl, CompanionService } from './companion.service';
 import { skillMatch,minimumExperience,roleMatches } from './skill-match';
+import {validListingTitle} from './listing-title';
 
 const VERSION = 'official-feed-v1';
 const meta = (app: any): any => app.matchReasons && !Array.isArray(app.matchReasons) ? app.matchReasons : {};
-const isLive = (app: any) => [VERSION,'browser-listing-v1'].includes(meta(app).version) && browserJobUrl(meta(app).url);
+const isLive = (app: any) => validListingTitle(app.jobTitle) && [VERSION,'browser-listing-v1'].includes(meta(app).version) && browserJobUrl(meta(app).url);
 
 @Injectable()
 export class JobsService {
