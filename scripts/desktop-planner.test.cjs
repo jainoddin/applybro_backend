@@ -55,6 +55,15 @@ test('unique Easy Apply uses its observed numeric id without a model call',async
   const result=await service.planApplication({id:'device',userId:'owner'},'run',obs);assert.deepEqual(result.action,{kind:'CLICK',element:1,reason:undefined});
  }finally{old===undefined?delete process.env.COMPANION_AI_PLANNER_ENABLED:process.env.COMPANION_AI_PLANNER_ENABLED=old;}
 });
+
+test('planner diagnostics contain only application controls and counts, never candidate facts',async()=>{
+ const old=process.env.COMPANION_AI_PLANNER_ENABLED;process.env.COMPANION_AI_PLANNER_ENABLED='true';
+ try{const {run,service}=fixture();const obs=observation([field('Email'),field('Private Candidate Menu','button',{id:1,tag:'BUTTON'}),field('Easy Apply','button',{id:2,tag:'BUTTON'})]);
+  await service.planApplication({id:'device',userId:'owner'},'run',obs);
+  assert.deepEqual(run.details.plannerObservation,{fieldCount:3,requiredUnfilled:3,controls:[{label:'Easy Apply',disabled:false,external:false}]});
+  assert.equal(JSON.stringify(run.details).includes('verified@example.invalid'),false);assert.equal(JSON.stringify(run.details).includes('Private Candidate Menu'),false);
+ }finally{old===undefined?delete process.env.COMPANION_AI_PLANNER_ENABLED:process.env.COMPANION_AI_PLANNER_ENABLED=old;}
+});
 test('device planner refuses expired eligibility, wrong job identity and post-submit replay',async()=>{
  const old=process.env.COMPANION_AI_PLANNER_ENABLED;process.env.COMPANION_AI_PLANNER_ENABLED='true';
  try{const {run,service}=fixture();const device={id:'device',userId:'owner'};

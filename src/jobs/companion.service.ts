@@ -265,7 +265,10 @@ export class CompanionService {
      const signature=digest(JSON.stringify({observation,kind:action.kind,element:action.element}));
      if(task.details?.plannerLast===signature)action={kind:'ASK_USER',reason:'The previous step did not change this form. Review it before continuing.'};
      // A concurrent cancellation, submission or another planner wins this race.
-     const changed:any[]=await this.prisma.$queryRaw`UPDATE "BrowserRun" SET "details"="details" || ${JSON.stringify({plannerSteps:count+1,plannerLast:signature,message:'Application planner: '+action.kind})}::jsonb,"updatedAt"=NOW() WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('OPENED','REVIEW_REQUIRED') AND COALESCE(("details"->>'plannerSteps')::int,0)=${count} RETURNING "id"`;
+     // Keep only bounded application-control labels and counts for diagnostics.
+     // Never persist page text, candidate facts, input values or model payloads.
+     const plannerObservation={fieldCount:observation.fields.length,requiredUnfilled:observation.fields.filter(f=>f.required&&!f.filled&&!f.disabled).length,controls:observation.fields.filter(f=>['BUTTON','A'].includes(f.tag)&&/^(?:easy apply|apply(?: now| on company (?:site|website))?|next|continue|review(?: your application)?|submit(?: application)?|send application|finish application)$/i.test(f.label.trim())).slice(0,10).map(f=>({label:f.label.trim(),disabled:f.disabled,external:!!f.href&&new URL(f.href,observation.url).href!==observation.url}))};
+     const changed:any[]=await this.prisma.$queryRaw`UPDATE "BrowserRun" SET "details"="details" || ${JSON.stringify({plannerSteps:count+1,plannerLast:signature,plannerLastKind:action.kind,plannerObservation,message:'Application planner: '+action.kind})}::jsonb,"updatedAt"=NOW() WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('OPENED','REVIEW_REQUIRED') AND COALESCE(("details"->>'plannerSteps')::int,0)=${count} RETURNING "id"`;
      if(!changed.length)throw new BadRequestException('This application changed while planning. No action was executed.');
      return {action,step:count+1};
    }finally{this.plannerBusy.delete(id);}
