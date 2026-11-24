@@ -57,6 +57,25 @@ test('repeated unchanged step is parked instead of looping and saved answers are
   assert.equal((await service.planApplication(device,'run',obs)).action.kind,'ASK_USER');
  }finally{old===undefined?delete process.env.COMPANION_AI_PLANNER_ENABLED:process.env.COMPANION_AI_PLANNER_ENABLED=old;}
 });
+
+test('a portal placeholder is not sufficient employer identity for planning',async()=>{
+ const old=process.env.COMPANION_AI_PLANNER_ENABLED;process.env.COMPANION_AI_PLANNER_ENABLED='true';
+ try{const {app,service}=fixture();app.companyName='LinkedIn';
+  const result=await service.planApplication({id:'device',userId:'owner'},'run',{...observation([]),text:'Frontend Engineer LinkedIn'});
+  assert.equal(result.action.kind,'ASK_USER');assert.match(result.action.reason,/employer name/);
+ }finally{old===undefined?delete process.env.COMPANION_AI_PLANNER_ENABLED:process.env.COMPANION_AI_PLANNER_ENABLED=old;}
+});
+
+test('reinspection persists the actual employer and never overwrites it with a portal hostname',async()=>{
+ for(const supplied of ['Example Employer','www.linkedin.com']){
+  let saved;
+  const old={id:'app',companyName:supplied==='Example Employer'?'LinkedIn':'Existing Employer',status:'WAITING_FOR_APPROVAL',matchReasons:{version:'browser-listing-v1',url:'https://www.linkedin.com/jobs/view/123/'}};
+  const db={user:{findUnique:async()=>({id:'owner',activeMode:'AUTO_APPLY',autoApplyConsent:true,subscription:{active:true,trialEnds:new Date(Date.now()+86400000)},skills:'React Node.js TypeScript',minMatchScore:50,preferences:{titles:['Accountant']}})},jobApplication:{findFirst:async()=>old,upsert:async data=>{saved=data;}}};
+  await new CompanionService(db).observeJob({id:'device',userId:'owner'},{url:old.matchReasons.url,title:'Frontend Engineer',company:supplied,description:'React Node.js TypeScript engineers build tested accessible applications and maintain reliable web services. '.repeat(3)});
+  if(supplied==='Example Employer'){assert.equal(saved.update.companyName,'Example Employer');assert.equal(saved.update.matchReasons.companyObserved,true);}
+  else {assert.equal('companyName' in saved.update,false);assert.equal(saved.update.matchReasons.companyObserved,false);}
+ }
+});
 test('saved WhatsApp answer is scoped to the exact question and consumed without asking again',async()=>{
  const old=process.env.COMPANION_AI_PLANNER_ENABLED;process.env.COMPANION_AI_PLANNER_ENABLED='true';
  try{const {run,service}=fixture();run.details.answers={'Notice period in days':'30'};
