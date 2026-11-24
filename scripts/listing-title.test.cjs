@@ -3,7 +3,7 @@ const {validListingTitle}=require('../dist/jobs/listing-title');
 const {CompanionService}=require('../dist/jobs/companion.service');
 const {JobsService}=require('../dist/jobs/jobs.service');
 test('action text is not a job title but legitimate titles remain valid',()=>{
- for(const title of ['Share negative feedback','Send feedback','Report this job','Apply now','Easy Apply','Show more','More','More options'])assert.equal(validListingTitle(title),false,title);
+ for(const title of ['Share negative feedback','Send feedback','Report this job','Apply now','Easy Apply','Show more','More','More options','0 notifications','3 new notifications total'])assert.equal(validListingTitle(title),false,title);
  for(const title of ['Full-Stack Engineer','Feedback Engineer','Software Engineer - Apply Platform'])assert.equal(validListingTitle(title),true,title);
 });
 test('feedback-only discovery performs no listing writes and does not claim an import',async()=>{

@@ -18,3 +18,18 @@ test('a matching role with insufficient description evidence explains that speci
  const result=await service.observeJob({userId:'owner'},{url:'https://www.linkedin.com/jobs/view/123/',title:'Full Stack Developer',description:'React development and working with the team. '.repeat(8)},'inspection');
  assert.equal(result.prepared,false);assert.match(result.reason,/fewer than three recognized technologies/);
 });
+
+test('global notification headings use the previously observed title for the exact same job URL',async()=>{
+ const {service}=fixture();let queued=false;
+ service.prisma.jobApplication.findFirst=async()=>({id:'posting',jobTitle:'Full Stack Engineer',status:'WAITING_FOR_APPROVAL',matchReasons:{version:'browser-listing-v1',url:'https://www.linkedin.com/jobs/view/123/'}});
+ service.create=async(_user,data)=>{queued=true;assert.equal(data.autoSubmit,true);return {id:'application'};};
+ const result=await service.observeJob({userId:'owner'},{url:'https://www.linkedin.com/jobs/view/123/',title:'0 notifications',description:'React TypeScript NodeJS '.repeat(12)},'inspection');
+ assert.equal(queued,true);assert.equal(result.prepared,true);
+});
+
+test('notification heading cannot borrow a title from a different posting or unverified data',async()=>{
+ for(const matchReasons of [{version:'browser-listing-v1',url:'https://www.linkedin.com/jobs/view/456/'},{version:'unverified',url:'https://www.linkedin.com/jobs/view/123/'}]){
+  const {service}=fixture();service.prisma.jobApplication.findFirst=async()=>({id:'posting',jobTitle:'Full Stack Engineer',matchReasons});
+  await assert.rejects(()=>service.observeJob({userId:'owner'},{url:'https://www.linkedin.com/jobs/view/123/',title:'0 notifications',description:'React TypeScript NodeJS '.repeat(12)},'inspection'),/no supported job title/);
+ }
+});

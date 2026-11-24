@@ -261,17 +261,21 @@ export class CompanionService {
    const parsed=new URL(data.url);parsed.search='';parsed.hash='';const url=parsed.href;
    const old=await this.prisma.jobApplication.findFirst({where:{userId:device.userId,...(inspectedApplicationId?{id:inspectedApplicationId}:{matchReasons:{path:['url'],equals:url}})}});
    const previous:any=old?.matchReasons||{};
+   // Some LinkedIn layouts expose the global notifications H1 before the job
+   // heading. Reuse only a previously observed title for this exact posting URL.
+   const title=validListingTitle(data.title)?data.title:previous.url===url&&['browser-listing-v1','official-feed-v1'].includes(previous.version)&&validListingTitle(old?.jobTitle)?old.jobTitle:null;
+   if(!title)throw new BadRequestException('The selected posting has no supported job title.');
    const match=skillMatch(user.skills||'',data.description),minimumYears=minimumExperience(data.description);
    const version=previous.version==='official-feed-v1'?'official-feed-v1':'browser-listing-v1';
    const metadata={...previous,version,url,source:parsed.hostname.includes('naukri')?'Naukri.com':parsed.hostname.includes('linkedin')?'LinkedIn':parsed.hostname.includes('lever')?'lever':'greenhouse',location:String(data.location||previous.location||'See employer listing').slice(0,160),matchAssessed:match.requested.length>=3,minimumYears,skills:match.matched,reasons:[match.requested.length>=3?`${match.matched.length} of ${match.requested.length} recognized technologies match your saved profile`:'Insufficient skill evidence; manual review required','Job description observed in your paired browser. Review all employer requirements.'],checkedAt:new Date().toISOString()};
    const jobId=old?.id||digest(device.userId+':'+url);
-   await this.prisma.jobApplication.upsert({where:{id:jobId},create:{id:jobId,userId:device.userId,jobTitle:data.title.slice(0,200),companyName:String(data.company||metadata.source).slice(0,150),portal:metadata.source==='Naukri.com'?'NAUKRI':metadata.source==='LinkedIn'?'LINKEDIN':'ATS_DIRECT',matchScore:match.score,matchReasons:metadata,applyMode:'ASSISTED_APPLY'},update:{matchScore:match.score,matchReasons:metadata}});
-   const selectedRole=roleMatches(data.title,user.preferences?.titles||[]);
+   await this.prisma.jobApplication.upsert({where:{id:jobId},create:{id:jobId,userId:device.userId,jobTitle:title.slice(0,200),companyName:String(data.company||metadata.source).slice(0,150),portal:metadata.source==='Naukri.com'?'NAUKRI':metadata.source==='LinkedIn'?'LINKEDIN':'ATS_DIRECT',matchScore:match.score,matchReasons:metadata,applyMode:'ASSISTED_APPLY'},update:{matchScore:match.score,matchReasons:metadata}});
+   const selectedRole=roleMatches(title,user.preferences?.titles||[]);
    const eligible=selectedRole&&metadata.matchAssessed&&match.score>=user.minMatchScore;
    if(inspectionId)await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='INSPECTED',"updatedAt"=NOW() WHERE "id"=${inspectionId}`;
-   let result:any={prepared:false,reason:eligible?'Job is ready for a browser application.':!selectedRole?`Observed job title does not match your selected roles: ${data.title.slice(0,160)}.`:!metadata.matchAssessed?'Job needs review: fewer than three recognized technologies were found in its description.':`Job needs review: keyword coverage ${match.score}% (saved minimum ${user.minMatchScore}%).`};
+   let result:any={prepared:false,reason:eligible?'Job is ready for a browser application.':!selectedRole?`Observed job title does not match your selected roles: ${title.slice(0,160)}.`:!metadata.matchAssessed?'Job needs review: fewer than three recognized technologies were found in its description.':`Job needs review: keyword coverage ${match.score}% (saved minimum ${user.minMatchScore}%).`};
    if(old?.status==='APPLIED')result={prepared:false,reason:'This job already has a recorded submission.'};
-   else if(eligible||!inspectionId&&roleMatches(data.title,user.preferences?.titles||[])){
+   else if(eligible||!inspectionId&&roleMatches(title,user.preferences?.titles||[])){
      try{const nextRun=await this.create(device.userId,{kind:'APPLY',applicationId:jobId,autoSubmit:eligible,autoPrepare:true});result={prepared:true,nextRun,autoSubmit:eligible,reason:eligible?'Matched job. Preparing saved profile and resume.':'Preparing your resume for manual review; automatic submission criteria were not met.'};}catch(error){result={prepared:false,reason:typeof error.message==='string'?error.message:'Application needs review.'};}
    }
    if(inspectionId)await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='INSPECTED',"details"="details" || ${JSON.stringify({message:result.reason})}::jsonb,"updatedAt"=NOW() WHERE "id"=${inspectionId}`;
