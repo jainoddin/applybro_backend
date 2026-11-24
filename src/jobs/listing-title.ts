@@ -2,5 +2,5 @@
 export function validListingTitle(value:unknown):value is string{
  if(typeof value!=='string'||!value.trim())return false;
  const title=value.replace(/\s+/g,' ').trim();
- return !/^(?:(?:share|send|give|provide)\s+(?:(?:negative|positive|your)\s+)?feedback|feedback|report(?: this)? job|save(?: this)? job|dismiss(?: this)? job|apply(?: now)?|easy apply|show (?:more|all)|see (?:more|all))[.!?…]?$/i.test(title);
+ return !/^(?:(?:share|send|give|provide)\s+(?:(?:negative|positive|your)\s+)?feedback|feedback|more(?: options)?|report(?: this)? job|save(?: this)? job|dismiss(?: this)? job|apply(?: now)?|easy apply|show (?:more|all)|see (?:more|all))[.!?…]?$/i.test(title);
 }
