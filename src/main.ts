@@ -38,6 +38,7 @@ async function bootstrap() {
 
   const port = process.env.PORT || 4000;
   await app.listen(port);
+  console.info(JSON.stringify({event:'DESKTOP_PLANNER_CONFIGURATION',enabled:process.env.COMPANION_AI_PLANNER_ENABLED==='true',providerConfigured:!!process.env.CLOUD_AGENT_MODEL&&!!(process.env.CLOUD_AGENT_API_KEY||(process.env.GEMINI_API_KEYS||'').split(',')[0].trim())}));
   console.log(`ApplyBro API is running on http://localhost:${port}/api/docs`);
 }
 
