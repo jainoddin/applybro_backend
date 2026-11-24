@@ -230,7 +230,10 @@ export class CompanionService {
      if(!app||app.status==='APPLIED')throw new BadRequestException('This application is unavailable or already submitted.');
      if(/^(?:linkedin|naukri(?:\.com)?|www\.(?:linkedin|naukri)\.com)$/i.test(String(app.companyName||'').trim())&&(app.matchReasons as any)?.companyObserved!==true)return {action:{kind:'ASK_USER',reason:'The employer name has not been read from this posting. Reinspect this job before applying.'}};
      const words=String(app.jobTitle).toLowerCase().match(/[a-z]{3,}/g)||[],page=observation.text.toLowerCase();
-     if(!words.length||words.filter(w=>page.includes(w)).length/words.length<0.7||!page.includes(String(app.companyName).toLowerCase()))return {action:{kind:'ASK_USER',reason:'The selected job and employer could not be verified on this page.'}};
+      const rawCompany=String(app.companyName||'').replace(/\s*\d+(\.\d+)?([kK]\s*reviews?|\s*reviews?).*$/i,'').trim().toLowerCase();
+      const companyWords=rawCompany.match(/[a-z0-9]{3,}/g)||[];
+      const companyMatch=!companyWords.length||companyWords.some(w=>page.includes(w));
+      if(!words.length||words.filter(w=>page.includes(w)).length/words.length<0.7||!companyMatch)return {action:{kind:'ASK_USER',reason:'The selected job and employer could not be verified on this page.'}};
      const user=await this.prisma.user.findUnique({where:{id:device.userId}}),facts=factsFor(user);
      const count=Number(task.details?.plannerSteps||0);
      if(count>=36)return {action:{kind:'ASK_USER',reason:'This form needs review after 36 application steps.'}};
