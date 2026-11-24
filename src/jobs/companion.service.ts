@@ -229,7 +229,8 @@ export class CompanionService {
    // listing batch and inspection queue atomically with a fixed query count.
    const rows=[...listings.values()],payload=JSON.stringify(rows);
    if(!rows.length)throw new BadRequestException('No supported job titles were found. Portal action links were not imported as jobs.');
-   const inspections=JSON.stringify(task.autoDiscover?rows.filter(row=>roleMatches(row.jobTitle,user.preferences?.titles||[])).slice(0,Math.min(15,user.dailyApplyLimit*3)).map(row=>({id:randomUUID(),applicationId:row.id,url:row.url})):[]);
+   const inspectionLimit=Math.min(15,user.dailyApplyLimit*3);
+   const inspections=JSON.stringify(task.autoDiscover?rows.filter(row=>roleMatches(row.jobTitle,user.preferences?.titles||[])).map(row=>({id:randomUUID(),applicationId:row.id,url:row.url})):[]);
    return this.prisma.$transaction(async tx=>{
      const locked:any[]=await tx.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('OPENED','REVIEW_REQUIRED') FOR UPDATE`;
      if(!locked.length)throw new BadRequestException('This discovery has finished or was cancelled.');
@@ -244,6 +245,8 @@ export class CompanionService {
        AND EXISTS (SELECT 1 FROM "JobApplication" a WHERE a.id=row."applicationId" AND a."userId"=${device.userId} AND a.status<>'APPLIED')
        AND NOT EXISTS (SELECT 1 FROM "BrowserRun" r WHERE r."userId"=${device.userId} AND r."applicationId"=row."applicationId" AND r.stage IN ('CREATED','OPENED','REVIEW_REQUIRED','SUBMITTING','UNKNOWN'))
        AND NOT EXISTS (SELECT 1 FROM "AgentRun" a WHERE a."userId"=${device.userId} AND a."applicationId"=row."applicationId" AND a.state IN ('QUEUED','RUNNING','WAITING_USER','SUBMITTING','UNKNOWN','CONFIRMED'))
+       ORDER BY (SELECT MAX(r."updatedAt") FROM "BrowserRun" r WHERE r."userId"=${device.userId} AND r."applicationId"=row."applicationId" AND r.kind='INSPECT' AND r.stage='INSPECTED') ASC NULLS FIRST,row."applicationId"
+       LIMIT ${inspectionLimit}
        ON CONFLICT DO NOTHING RETURNING "id","kind","portal","url"`;
      if(task.autoDiscover)await tx.$executeRaw`UPDATE "BrowserRun" SET "stage"='DISCOVERED',"updatedAt"=NOW() WHERE "id"=${id}`;
      return {imported:rows.length,inspectRuns};

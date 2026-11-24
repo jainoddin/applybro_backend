@@ -34,17 +34,25 @@ test('30-job import is atomic, deduplicated, bounded and preserves submission ev
    assert.equal(statements,0,'validate the entire payload before writing any listing');
    // A repeated card must not make ON CONFLICT update the same row twice.
    const result=await service.importJobs(device,'fixture-search',{jobs:[...jobs.slice(0,29),jobs[0]]});
-   assert.equal(result.imported,29);assert.equal(result.inspectRuns.length,12);assert.equal(statements,4);
+   assert.equal(result.imported,29);assert.equal(result.inspectRuns.length,15);assert.equal(statements,4);
    const [preserved]=await tx.$queryRaw`SELECT status,"matchScore","matchReasons" FROM "JobApplication" WHERE id=${jobId(0)}`;
    assert.equal(preserved.status,'APPLIED');assert.equal(preserved.matchScore,88);assert.equal(preserved.matchReasons.confirmation,'fixture evidence');
    const [search]=await tx.$queryRaw`SELECT stage FROM "BrowserRun" WHERE id='fixture-search'`;
    assert.equal(search.stage,'DISCOVERED');
    await assert.rejects(()=>service.importJobs(device,'fixture-search',{jobs}),/finished or was cancelled/);
+   const firstIds=result.inspectRuns.map(run=>run.id);
+   const firstUrls=new Set(result.inspectRuns.map(run=>run.url));
+   await tx.$executeRaw`UPDATE "BrowserRun" SET stage='INSPECTED' WHERE id=ANY(${firstIds}::text[])`;
+   await tx.$executeRaw`UPDATE "BrowserRun" SET stage='OPENED' WHERE id='fixture-search'`;
+   const rotated=await service.importJobs(device,'fixture-search',{jobs});
+   const unseen=jobs.filter((job,index)=>index>2&&!firstUrls.has(job.url));
+   assert.equal(rotated.inspectRuns.length,15);
+   assert.ok(unseen.every(job=>rotated.inspectRuns.some(run=>run.url===job.url)),'uninspected later cards must be selected before already inspected cards');
    await tx.$executeRaw`UPDATE "BrowserRun" SET stage='OPENED' WHERE id='fixture-search'`;
    await tx.$executeRaw`UPDATE "User" SET "autoApplyConsent"=false WHERE id='fixture-owner'`;
    const stopped=await service.importJobs(device,'fixture-search',{jobs:[jobs[29]]});
    assert.equal(stopped.inspectRuns.length,0,'withdrawn consent cannot start more inspection tasks');
-   console.log('TEMP DB IMPORT: 29 unique cards; 12 inspections; 4 transaction queries; existing applied/unknown/hosted jobs not requeued; rollback enforced.');
+   console.log('TEMP DB IMPORT: 29 unique cards; 15 inspections; 4 transaction queries; later unseen cards selected on next batch; applied/unknown/hosted jobs not requeued; rollback enforced.');
    throw rollback;
   },{timeout:30000});
  }catch(error){if(error!==rollback)throw error;}
