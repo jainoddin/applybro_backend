@@ -136,12 +136,18 @@ export class CompanionService {
    catch(error){if(error?.meta?.code==='23505')throw new BadRequestException('An active browser run already exists for this application.');throw error;}
    return {id,url,kind,portal};
  }
+ private async expireReadTasks(device:any){
+   // Read tasks have a 24-hour lifetime. Leaving expired CREATED rows active
+   // makes import deduplication suppress those postings forever.
+   await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "stage"='FAILED',"updatedAt"=NOW(),"details"="details" || '{"message":"This job read expired before completion. A fresh inspection can be queued; no application was submitted."}'::jsonb WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "kind" IN ('DISCOVER','INSPECT') AND "stage" IN ('CREATED','OPENED','REVIEW_REQUIRED') AND "details"->>'autoDiscover'='true' AND ("details"->>'needsInput') IS DISTINCT FROM 'true' AND "createdAt"<NOW()-INTERVAL '24 hours'`;
+ }
  async autoBatch(device:any){
    const user=await this.prisma.user.findUnique({where:{id:device.userId},include:{subscription:true,preferences:true}});
    if(process.env.COMPANION_AUTO_APPLY_ENABLED!=='true')throw new BadRequestException('Desktop Auto-Apply is not enabled on this deployment.');
    if(!user||user.activeMode!=='AUTO_APPLY'||!user.autoApplyConsent||!user.subscription?.active||user.subscription.trialEnds<=new Date())throw new BadRequestException('Enable Auto-Apply with an active plan first.');
    const hosted:any[]=await this.prisma.$queryRaw`SELECT "userId" FROM "AgentPreference" WHERE "userId"=${device.userId} AND "enabled"=true LIMIT 1`;
    if(hosted.length)throw new BadRequestException('Pause Hosted Agent before enabling desktop processing.');
+   await this.expireReadTasks(device);
    const remaining=await this.remaining(device.userId,user.dailyApplyLimit);
    if(!remaining)return {runs:[],remaining:0,message:'Daily limit reached. Unconfirmed submissions also reserve a slot.'};
    const readyToSubmit:any[]=await this.prisma.$queryRaw`SELECT "id","kind","stage","portal" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage"='REVIEW_REQUIRED' AND "kind"='APPLY' AND "details"->'answers' IS NOT NULL AND "createdAt">NOW()-INTERVAL '7 days' ORDER BY "updatedAt" ASC LIMIT 5`;
@@ -166,6 +172,15 @@ export class CompanionService {
  async task(device:any,id:string){
    const rows:any[]=await this.prisma.$queryRaw`SELECT * FROM "BrowserRun" WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id}`;
    const run=rows[0];if(!run)throw new NotFoundException('Browser task not found.');
+   const expiredRead=['DISCOVER','INSPECT'].includes(run.kind)&&Date.now()-new Date(run.createdAt).getTime()>86400000;
+   if(expiredRead){
+     await this.expireReadTasks(device);
+     const refreshed:any[]=await this.prisma.$queryRaw`SELECT * FROM "BrowserRun" WHERE "id"=${run.id} AND "userId"=${device.userId} AND "deviceId"=${device.id}`;
+     if(refreshed[0])Object.assign(run,refreshed[0]);
+     // Let an existing local queue observe completion/pause, rather than
+     // throwing forever on its expired head. Never release resume/profile.
+     if(['FAILED','CANCELLED','INSPECTED','DISCOVERED'].includes(run.stage)||run.details?.needsInput===true)return {...run,autoSubmit:false,autoDiscover:false,autoPrepare:false,resume:null,profile:null,stopReason:'This read task has expired.'};
+   }
    // A lost content-script response must not hold every other portal forever.
    // Only read-only discovery/inspection can expire here. Never infer the
    // outcome of an APPLY task, or dismiss a question explicitly needing input.
