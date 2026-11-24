@@ -79,7 +79,7 @@ export class WhatsAppService {
   if(!validFields.length)return null;
   const contacts:any[]=await this.db.$queryRaw`SELECT "encrypted" FROM "WhatsAppContact" WHERE "userId"=${run.userId} AND "verifiedAt" IS NOT NULL`;
   if(!contacts[0])return null;
-  const id=randomUUID(),expires=new Date(Date.now()+600000);
+  const id=randomUUID(),expires=new Date(Date.now()+300000);
   const data=seal({field:validFields[0],fields:validFields,url,context:{url,company:context.company,title:context.title}});
   const activeAgent:any[]=await this.db.$queryRaw`SELECT "id" FROM "AgentRun" WHERE "id"=${run.id} AND "userId"=${run.userId} AND "state"='WAITING_USER'`;
   const activeBrowser:any[]=activeAgent[0]?[]:await this.db.$queryRaw`SELECT "id" FROM "BrowserRun" WHERE "id"=${run.id} AND "userId"=${run.userId} AND "stage" IN ('REVIEW_REQUIRED','OPENED','SUBMITTING')`;
@@ -130,20 +130,18 @@ export class WhatsAppService {
      if(pairing){await tx.$executeRaw`UPDATE "WhatsAppContact" SET "verifiedAt"=NOW(),"pairHash"=NULL,"pairExpires"=NULL WHERE "phoneHash"=${phoneHash} AND "pairHash"=${tokenHash(pairing[1])} AND "pairExpires">NOW()`;return;}
      let rows:any[]=[];
      if(typeof message.context?.id==='string'){
-       rows=await tx.$queryRaw`SELECT q."id", q."runId", q."userId", q."encrypted" FROM "WhatsAppQuestion" q JOIN "WhatsAppContact" c ON c."userId"=q."userId" WHERE c."phoneHash"=${phoneHash} AND c."verifiedAt" IS NOT NULL AND q."messageId"=${message.context.id} AND (q."expiresAt">NOW() OR q."state"='TIMEOUT_PARKED') FOR UPDATE OF q`;
+       rows=await tx.$queryRaw`SELECT q."id", q."runId", q."userId", q."encrypted" FROM "WhatsAppQuestion" q JOIN "WhatsAppContact" c ON c."userId"=q."userId" WHERE c."phoneHash"=${phoneHash} AND c."verifiedAt" IS NOT NULL AND q."messageId"=${message.context.id} AND q."state"='ACCEPTED' AND q."expiresAt">NOW() FOR UPDATE OF q`;
      }
-     if(!rows[0]){
-       rows=await tx.$queryRaw`SELECT q."id", q."runId", q."userId", q."encrypted" FROM "WhatsAppQuestion" q JOIN "WhatsAppContact" c ON c."userId"=q."userId" WHERE c."phoneHash"=${phoneHash} AND c."verifiedAt" IS NOT NULL AND (q."expiresAt">NOW() OR q."state"='TIMEOUT_PARKED') ORDER BY q."expiresAt" DESC LIMIT 1 FOR UPDATE OF q`;
-     }
+     // An unquoted reply must never be assigned to the latest of several jobs.
      if(rows[0]){
        const q=rows[0];
        await tx.$executeRaw`UPDATE "WhatsAppQuestion" SET "state"='ANSWERED',"answer"=${seal({value:text})},"answeredAt"=NOW() WHERE "id"=${q.id}`;
        let qData:any=null;try{qData=unseal(q.encrypted);}catch{}
-       const bRuns:any[]=q.runId?await this.db.$queryRaw`SELECT "id","details" FROM "BrowserRun" WHERE "id"=${q.runId}`:[];
+       const bRuns:any[]=q.runId?await tx.$queryRaw`SELECT "id","details" FROM "BrowserRun" WHERE "id"=${q.runId} AND "userId"=${q.userId} AND "stage"='REVIEW_REQUIRED' AND "kind"='APPLY' FOR UPDATE`:[];
        if(bRuns[0]){
          const details=bRuns[0].details||{};
          const answers=details.answers||{};
-         if(Array.isArray(qData?.fields)){
+         if(Array.isArray(qData?.fields)&&qData.fields.length===1){
            for(const f of qData.fields){
              answers[f.label]=text;
              await this.remember(q.userId,f,text,qData.context);
@@ -152,7 +150,7 @@ export class WhatsAppService {
            answers[qData.field.label]=text;
            await this.remember(q.userId,qData.field,text,qData.context);
          }
-         const updatedDetails={...details,answers,message:`Received WhatsApp answer. Resuming application.`};
+         const updatedDetails={...details,answers,answerReady:true,needsInput:false,plannerLast:null,whatsappQuestionId:null,message:`Received WhatsApp answer. Resuming application.`};
          await tx.$executeRaw`UPDATE "BrowserRun" SET "details"=${JSON.stringify(updatedDetails)}::jsonb,"stage"='REVIEW_REQUIRED',"updatedAt"=NOW() WHERE "id"=${q.runId}`;
        }
      }

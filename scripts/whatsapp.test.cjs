@@ -55,6 +55,20 @@ test('Inbound answers require quoted context and matching verified sender; dupli
   await service.inbound(incoming('good','919876543210',{id:'outgoing-question'}));assert.equal(writes,1);
  }finally{for(const key of Object.keys(process.env))if(!(key in env))delete process.env[key];Object.assign(process.env,env);}
 });
+
+test('a quoted browser answer resumes only its parked job and enables exact-question reuse',async()=>{
+ const {WhatsAppService}=require('../dist/agent/whatsapp.service'),{seal}=require('../dist/agent/agent-policy');
+ const previous={...process.env};Object.assign(process.env,{WHATSAPP_ENABLED:'true',WHATSAPP_ACCESS_TOKEN:'fixture',WHATSAPP_PHONE_NUMBER_ID:'123',WHATSAPP_APP_SECRET:'fixture',WHATSAPP_VERIFY_TOKEN:'fixture',WHATSAPP_TEMPLATE_NAME:'fixture',WHATSAPP_API_VERSION:'v23.0',WHATSAPP_BUSINESS_NUMBER:'15551234567',CLOUD_AGENT_ENCRYPTION_KEY:'11'.repeat(32)});
+ const field={id:1,tag:'INPUT',type:'text',label:'Notice period in days'};let updated,remembered;
+ const db={$transaction:async fn=>fn(db),$executeRaw:async(parts,...values)=>{if(parts.join('?').includes('UPDATE "BrowserRun"'))updated=JSON.parse(values[0]);return 1;},$queryRaw:async(parts,...values)=>{
+  const sql=parts.join('?');if(sql.includes('FROM "WhatsAppQuestion"')){assert.ok(sql.includes("q.\"state\"='ACCEPTED'"));assert.ok(sql.includes('q."expiresAt">NOW()'));return [{id:'q',runId:'run',userId:'owner',encrypted:seal({field,fields:[field],context:{url:'https://employer.invalid/job',title:'Engineer',company:'Example'}})}];}
+  assert.ok(sql.includes('"userId"='));assert.ok(sql.includes("\"stage\"='REVIEW_REQUIRED'"));return [{id:'run',details:{needsInput:true,whatsappQuestionId:'q'}}];
+ }};
+ const service=new WhatsAppService(db);service.remember=async(...args)=>{remembered=args;};
+ try{await service.inbound({object:'whatsapp_business_account',entry:[{changes:[{value:{metadata:{phone_number_id:'123'},messages:[{id:'reply',from:'919876543210',type:'text',text:{body:'30'},context:{id:'quoted-message'}}]}}]}]});
+  assert.equal(updated.answers[field.label],'30');assert.equal(updated.answerReady,true);assert.equal(updated.needsInput,false);assert.equal(updated.whatsappQuestionId,null);assert.equal(remembered[0],'owner');assert.equal(remembered[2],'30');
+ }finally{for(const key of Object.keys(process.env))if(!(key in previous))delete process.env[key];Object.assign(process.env,previous);}
+});
 test('HTTP webhook preserves raw bytes, accepts authentic delivery and rejects tampered payloads',async()=>{
  require('reflect-metadata');const {Module}=require('@nestjs/common');const {NestFactory}=require('@nestjs/core');
  const {WhatsAppController}=require('../dist/agent/whatsapp.controller');const {WhatsAppService}=require('../dist/agent/whatsapp.service');const {AuthGuard}=require('../dist/auth/auth.guard');

@@ -5,6 +5,10 @@ import { trustedApplicationUrl, sameApplicationPage } from './live-sources';
 import { experienceRange,minimumExperience,roleMatches,skillMatch } from './skill-match';
 import { hasSubmissionEvidence } from './application-evidence';
 import {validListingTitle} from './listing-title';
+import {factsFor} from '../agent/agent-policy';
+import {WhatsAppService} from '../agent/whatsapp.service';
+import {answerableField} from '../agent/whatsapp-policy';
+import {cleanObservation,checkedAction,knownFieldValue,requestDesktopPlan} from './desktop-planner';
 
 export const portalUrls: Record<string,string> = {
   'Naukri.com':'https://www.naukri.com/mnjuser/profile',
@@ -30,6 +34,7 @@ const ALLOWED:Record<string,string[]>={
 };
 @Injectable()
 export class CompanionService {
+ private plannerBusy=new Set<string>();
  constructor(private readonly prisma:PrismaService){}
  private async remaining(userId:string,limit:number){
    const day=new Date(Date.now()+19800000).toISOString().slice(0,10),from=new Date(day+'T00:00:00+05:30');
@@ -150,7 +155,7 @@ export class CompanionService {
    await this.expireReadTasks(device);
    const remaining=await this.remaining(device.userId,user.dailyApplyLimit);
    if(!remaining)return {runs:[],remaining:0,message:'Daily limit reached. Unconfirmed submissions also reserve a slot.'};
-   const readyToSubmit:any[]=await this.prisma.$queryRaw`SELECT "id","kind","stage","portal" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage"='REVIEW_REQUIRED' AND "kind"='APPLY' AND "details"->'answers' IS NOT NULL AND "createdAt">NOW()-INTERVAL '7 days' ORDER BY "updatedAt" ASC LIMIT 5`;
+   const readyToSubmit:any[]=await this.prisma.$queryRaw`SELECT "id","kind","stage","portal" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage"='REVIEW_REQUIRED' AND "kind"='APPLY' AND "details"->>'answerReady'='true' AND "createdAt">NOW()-INTERVAL '1 day' ORDER BY "updatedAt" ASC LIMIT 5`;
    if(readyToSubmit.length)return {runs:readyToSubmit,remaining,message:'Resuming applications with confirmed WhatsApp answers.'};
    // Never replay a click whose result is unknown, or silently restart a form needing input.
    const pending:any[]=await this.prisma.$queryRaw`SELECT "id","kind","stage","portal" FROM "BrowserRun" WHERE "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('CREATED','OPENED') AND ("details"->>'autoSubmit'='true' OR "details"->>'autoDiscover'='true') AND "createdAt">NOW()-INTERVAL '24 hours' ORDER BY "createdAt" ASC LIMIT 30`;
@@ -207,9 +212,73 @@ export class CompanionService {
    const remainingSlots=await this.remaining(user.id,user.dailyApplyLimit);
    const autoAvailable=process.env.COMPANION_AUTO_APPLY_ENABLED==='true'&&user.activeMode==='AUTO_APPLY'&&user.autoApplyConsent&&user.subscription?.active&&user.subscription.trialEnds>new Date()&&remainingSlots>0;
    const files:any[]=run.kind==='APPLY'&&run.details?.resumeId?await this.prisma.$queryRaw`SELECT "fileName","fileBytes","mimeType" FROM "Resume" WHERE "userId"=${device.userId} AND "id"=${run.details.resumeId} AND "fileBytes" IS NOT NULL`:[];
-   return {...run,autoSubmit:run.details?.autoSubmit===true&&autoAvailable,autoDiscover:run.details?.autoDiscover===true&&autoAvailable,autoPrepare:run.details?.autoPrepare===true&&autoAvailable,stopReason:autoAvailable?'':remainingSlots===0?'Daily limit reached. Confirmed and unresolved submission attempts reserve the current daily slots. Check pending outcomes before starting more applications.':'Auto-Apply is off or the plan has expired.',reviewReason:run.details?.reviewReason||'',
+   return {...run,aiPlannerEnabled:process.env.COMPANION_AI_PLANNER_ENABLED==='true',autoSubmit:run.details?.autoSubmit===true&&autoAvailable,autoDiscover:run.details?.autoDiscover===true&&autoAvailable,autoPrepare:run.details?.autoPrepare===true&&autoAvailable,stopReason:autoAvailable?'':remainingSlots===0?'Daily limit reached. Confirmed and unresolved submission attempts reserve the current daily slots. Check pending outcomes before starting more applications.':'Auto-Apply is off or the plan has expired.',reviewReason:run.details?.reviewReason||'',
      resume:files[0]?{fileName:files[0].fileName,mimeType:files[0].mimeType,base64:Buffer.from(files[0].fileBytes).toString('base64')}:null,
      profile:run.kind==='APPLY'?{name:user.name,email:user.email,phone:user.phone||'',linkedIn:user.linkedIn||'',portfolio:user.portfolio||'',currentTitle:user.currentTitle||'',experience:user.experience||''}:null};
+ }
+ async planApplication(device:any,id:string,body:any){
+   if(process.env.COMPANION_AI_PLANNER_ENABLED!=='true')throw new BadRequestException('Desktop planner is not enabled.');
+   if(this.plannerBusy.has(id))throw new BadRequestException('An application decision is already in progress.');
+   this.plannerBusy.add(id);
+   try{
+     const task=await this.task(device,id);
+     if(task.kind!=='APPLY'||!task.autoSubmit||task.reviewReason||!task.resume||!['OPENED','REVIEW_REQUIRED'].includes(task.stage))throw new BadRequestException(task.stopReason||'This application is not eligible for planning.');
+     const observation=cleanObservation(body);
+     if(observation.url!==task.url)throw new BadRequestException('Return to the selected application before planning.');
+     const app=await this.prisma.jobApplication.findFirst({where:{id:task.applicationId,userId:device.userId}});
+     if(!app||app.status==='APPLIED')throw new BadRequestException('This application is unavailable or already submitted.');
+     const words=String(app.jobTitle).toLowerCase().match(/[a-z]{3,}/g)||[],page=observation.text.toLowerCase();
+     if(!words.length||words.filter(w=>page.includes(w)).length/words.length<0.7||!page.includes(String(app.companyName).toLowerCase()))return {action:{kind:'ASK_USER',reason:'The selected job and employer could not be verified on this page.'}};
+     const user=await this.prisma.user.findUnique({where:{id:device.userId}}),facts=factsFor(user);
+     const count=Number(task.details?.plannerSteps||0);
+     if(count>=36)return {action:{kind:'ASK_USER',reason:'This form needs review after 36 application steps.'}};
+     let raw:any;
+     if(observation.challenge)raw={kind:'ASK_USER'};
+     else{
+       // Fill only exact saved facts first; the model handles layout/navigation.
+       const known=observation.fields.map(field=>({field,value:knownFieldValue(field,facts)})).find(x=>x.value);
+       const upload=observation.fields.find(f=>!f.filled&&!f.disabled&&f.type==='file'&&/resume|\bcv\b/i.test(f.label)&&!/cover|photo|avatar/i.test(f.label));
+       if(known)raw={kind:'FILL',element:known.field.id,fact:known.value.fact};
+       else if(upload)raw={kind:'UPLOAD',element:upload.id};
+       else {
+         const unknown=observation.fields.find(f=>f.required&&!f.filled&&!f.disabled&&answerableField(f));
+         raw=unknown?{kind:'ASK_USER',element:unknown.id}:await requestDesktopPlan(observation,facts,{title:app.jobTitle,company:app.companyName});
+       }
+     }
+     let action:any=checkedAction(raw,observation,facts);
+     if(action.kind==='ASK_USER'){
+       const field=observation.fields[raw.element]||observation.fields.find(f=>f.required&&!f.filled&&answerableField(f));
+       if(field&&answerableField(field)&&!field.filled){
+         const context={url:task.url,company:app.companyName,title:app.jobTitle};
+         const memory=task.details?.answers?.[field.label]?null:await new WhatsAppService(this.prisma).recalled(device.userId,field,context);
+         const saved=task.details?.answers?.[field.label]||memory?.value;
+         if(typeof saved==='string'&&saved&&(!field.options.length||field.options.some(x=>x.trim().toLowerCase()===saved.trim().toLowerCase())))action={kind:'FILL',element:field.id,value:saved,source:'USER_ANSWER'};
+         else action={kind:'ASK_USER',element:field.id,field,reason:'Your answer is needed: '+field.label};
+       }
+     }
+     const signature=digest(JSON.stringify({observation,kind:action.kind,element:action.element}));
+     if(task.details?.plannerLast===signature)action={kind:'ASK_USER',reason:'The previous step did not change this form. Review it before continuing.'};
+     // A concurrent cancellation, submission or another planner wins this race.
+     const changed:any[]=await this.prisma.$queryRaw`UPDATE "BrowserRun" SET "details"="details" || ${JSON.stringify({plannerSteps:count+1,plannerLast:signature,message:'Application planner: '+action.kind})}::jsonb,"updatedAt"=NOW() WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage" IN ('OPENED','REVIEW_REQUIRED') AND COALESCE(("details"->>'plannerSteps')::int,0)=${count} RETURNING "id"`;
+     if(!changed.length)throw new BadRequestException('This application changed while planning. No action was executed.');
+     return {action,step:count+1};
+   }finally{this.plannerBusy.delete(id);}
+ }
+ async applicationQuestion(device:any,id:string,body:any){
+   const task=await this.task(device,id),field=body?.field;
+   if(task.kind!=='APPLY'||task.stage!=='REVIEW_REQUIRED'||task.details?.needsInput!==true||!answerableField(field))throw new BadRequestException('No answerable application question is pending.');
+   // Only the field recorded by the browser's parked report can be sent.
+   if(!task.details?.missingFields?.some((x:any)=>x.label===field.label&&x.type===field.type))throw new BadRequestException('The application question changed.');
+   if(task.details?.whatsappQuestionId)return {requested:true,delivery:'CHECK_TASK',message:'An answer request already exists for this task.'};
+   const claimed:any[]=await this.prisma.$queryRaw`UPDATE "BrowserRun" SET "details"="details" || '{"whatsappQuestionId":"REQUESTING"}'::jsonb WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "stage"='REVIEW_REQUIRED' AND COALESCE("details"->>'whatsappQuestionId','')='' RETURNING "id"`;
+   if(!claimed.length)return {requested:true,delivery:'CHECK_TASK',message:'An answer request is already being processed.'};
+   const app=await this.prisma.jobApplication.findFirst({where:{id:task.applicationId,userId:device.userId}});
+   const whatsapp=new WhatsAppService(this.prisma);
+   const questionId=await whatsapp.ask({id,userId:device.userId,kind:'APPLY'},field,task.url,{url:task.url,company:app?.companyName,title:app?.jobTitle});
+   if(!questionId){await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "details"="details" - 'whatsappQuestionId' WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id} AND "details"->>'whatsappQuestionId'='REQUESTING'`;return {requested:false,message:'WhatsApp is not ready for this account. Answer this question from the application task.'};}
+   await this.prisma.$executeRaw`UPDATE "BrowserRun" SET "details"="details" || ${JSON.stringify({whatsappQuestionId:questionId})}::jsonb WHERE "id"=${id} AND "userId"=${device.userId} AND "deviceId"=${device.id}`;
+   const rows:any[]=await this.prisma.$queryRaw`SELECT "state" FROM "WhatsAppQuestion" WHERE "id"=${questionId} AND "userId"=${device.userId}`;
+   return {requested:true,delivery:rows[0]?.state||'DELIVERY_UNKNOWN',message:rows[0]?.state==='ACCEPTED'?'WhatsApp accepted the answer request. Delivery is not yet confirmed.':'WhatsApp delivery is unconfirmed. This task remains paused.'};
  }
  async importJobs(device:any,id:string,data:any){
    const task=await this.task(device,id);
@@ -323,7 +392,7 @@ export class CompanionService {
      }
      // Evidence is a browser observation, not a signed employer API receipt.
      const observed=new URL(data.url);
-     const details={...run.details,message:String(data.message||'').slice(0,500),evidence:data.evidence?{type:String(data.evidence.type||'').slice(0,40),text:String(data.evidence.text||'').slice(0,400)}:null,missingFields:Array.isArray(data.missingFields)?data.missingFields.slice(0,10):run.details?.missingFields,needsInput:data.needsInput===true,parkedReason:data.needsInput===true?'WAITING_USER_INPUT':run.details?.parkedReason,parkedAt:data.needsInput===true?new Date().toISOString():run.details?.parkedAt,observedUrl:observed.origin+observed.pathname,observationSource:'USER_BROWSER',history:[...(Array.isArray(run.details?.history)?run.details.history:[]).slice(-19),{stage,at:new Date().toISOString()}]};
+     const details={...run.details,answerReady:data.needsInput===true?false:run.details?.answerReady,message:String(data.message||'').slice(0,500),evidence:data.evidence?{type:String(data.evidence.type||'').slice(0,40),text:String(data.evidence.text||'').slice(0,400)}:null,missingFields:Array.isArray(data.missingFields)?data.missingFields.slice(0,10):run.details?.missingFields,needsInput:data.needsInput===true,parkedReason:data.needsInput===true?'WAITING_USER_INPUT':run.details?.parkedReason,parkedAt:data.needsInput===true?new Date().toISOString():run.details?.parkedAt,observedUrl:observed.origin+observed.pathname,observationSource:'USER_BROWSER',history:[...(Array.isArray(run.details?.history)?run.details.history:[]).slice(-19),{stage,at:new Date().toISOString()}]};
      await tx.$executeRaw`UPDATE "BrowserRun" SET "stage"=${stage},"details"=${JSON.stringify(details)}::jsonb,"updatedAt"=NOW() WHERE "id"=${id}`;
      if(stage==='BROWSER_CONFIRMED'){
        const app=await tx.jobApplication.findFirst({where:{id:run.applicationId,userId:device.userId}});

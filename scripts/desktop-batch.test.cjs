@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const {CompanionService}=require('../dist/jobs/companion.service');
 function service({hosted=false,remaining=5,pending=[],selected=['LinkedIn','Naukri.com']}={}){
  const queries=[],created=[];
- const db={user:{findUnique:async()=>({id:'owner',activeMode:'AUTO_APPLY',autoApplyConsent:true,dailyApplyLimit:5,subscription:{active:true,trialEnds:new Date(Date.now()+86400000)}})},$queryRaw:async strings=>{const sql=strings.join('?');queries.push(sql);if(sql.includes('"AgentPreference"'))return hosted?[{userId:'owner'}]:[];if(sql.includes('"selectedPortals"'))return [{selectedPortals:selected}];if(sql.includes('"stage" IN'))return pending;return [];}};
+ const db={$executeRaw:async()=>0,user:{findUnique:async()=>({id:'owner',activeMode:'AUTO_APPLY',autoApplyConsent:true,dailyApplyLimit:5,subscription:{active:true,trialEnds:new Date(Date.now()+86400000)}})},$queryRaw:async strings=>{const sql=strings.join('?');queries.push(sql);if(sql.includes('"AgentPreference"'))return hosted?[{userId:'owner'}]:[];if(sql.includes('"selectedPortals"'))return [{selectedPortals:selected}];if(sql.includes('"stage" IN'))return pending;return [];}};
  const s=new CompanionService(db);s.remaining=async()=>remaining;s.create=async(owner,data)=>{assert.equal(owner,'owner');created.push(data);return {id:String(created.length),...data};};
  return {s,queries,created};
 }
