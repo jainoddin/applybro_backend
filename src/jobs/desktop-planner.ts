@@ -48,7 +48,13 @@ export function checkedAction(raw:any,observation:any,facts:Record<string,string
   if(!['BUTTON','A'].includes(field.tag)&&!['button','submit'].includes(field.type))throw new BadRequestException('Unsupported application control.');
   // External applications require an explicit domain handoff, not a blind click.
   if(field.href&&new URL(field.href,observation.url).href!==observation.url)throw new BadRequestException('This application requires an external employer form.');
-  if(action.kind==='CLICK'&&(!navigationControl.test(field.label)||submissionControl.test(field.label)))throw new BadRequestException('Only application navigation can be clicked without a submission reservation.');
+  if(action.kind==='CLICK'&&(!navigationControl.test(field.label)||submissionControl.test(field.label))){
+   if(submissionControl.test(field.label)){
+    action.kind='SUBMIT';
+   }else{
+    throw new BadRequestException('Only application navigation can be clicked without a submission reservation.');
+   }
+  }
   if(action.kind==='SUBMIT'&&!submissionControl.test(field.label))throw new BadRequestException('No recognized submission button.');
  }
  return {kind:action.kind,...(Number.isInteger(action.element)?{element:action.element}:{}),...(action.kind==='SCROLL'?{direction:action.direction==='up'?'up':'down'}:{}),reason:action.kind==='ASK_USER'||action.kind==='SKIP'?'This application needs your review.':undefined};
