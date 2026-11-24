@@ -17,6 +17,12 @@ test('unknown choices, credentials, external links and submit disguised as CLICK
  assert.throws(()=>checkedAction({kind:'UPLOAD',element:0},observation([field('Cover letter','file')]),{}));
  const captcha=observation([]);captcha.challenge=true;assert.equal(checkedAction({kind:'WAIT'},captcha,{}).kind,'ASK_USER');
 });
+
+test('invalid model element references are client validation failures rather than internal errors',()=>{
+ for(const action of [{kind:'CLICK'},{kind:'CLICK',element:'0'},{kind:'CLICK',element:-1}]){
+  assert.throws(()=>checkedAction(action,observation([field('Easy Apply','button',{tag:'BUTTON'})]),{}),e=>e.getStatus?.()===400&&/No action was executed/.test(e.message));
+ }
+});
 test('dropdown facts require an exact option, not a substring or inferred choice',()=>{
  const f=field('Full name','select-one',{tag:'SELECT',options:['Other candidate']});
  assert.equal(knownFieldValue(f,{fullName:'Test'}),null);
@@ -42,6 +48,13 @@ function fixture(){
  const db={user:{findUnique:async()=>({name:'Test Candidate',email:'verified@example.invalid'})},jobApplication:{findFirst:async()=>app},$queryRaw:async(parts,...values)=>{if(parts.join('?').startsWith('UPDATE')){if(!['OPENED','REVIEW_REQUIRED'].includes(run.stage)||Number(run.details.plannerSteps||0)!==values[4])return [];Object.assign(run.details,JSON.parse(values[0]));return [{id:run.id}];}return [];}};
  const service=new CompanionService(db);service.task=async(device,id)=>{assert.equal(device.userId,'owner');assert.equal(id,'run');return run;};return {run,app,service};
 }
+
+test('unique Easy Apply uses its observed numeric id without a model call',async()=>{
+ const old=process.env.COMPANION_AI_PLANNER_ENABLED;process.env.COMPANION_AI_PLANNER_ENABLED='true';
+ try{const {service}=fixture();const obs=observation([field('Save','button',{tag:'BUTTON'}),field('Easy Apply','button',{id:1,tag:'BUTTON'})]);
+  const result=await service.planApplication({id:'device',userId:'owner'},'run',obs);assert.deepEqual(result.action,{kind:'CLICK',element:1,reason:undefined});
+ }finally{old===undefined?delete process.env.COMPANION_AI_PLANNER_ENABLED:process.env.COMPANION_AI_PLANNER_ENABLED=old;}
+});
 test('device planner refuses expired eligibility, wrong job identity and post-submit replay',async()=>{
  const old=process.env.COMPANION_AI_PLANNER_ENABLED;process.env.COMPANION_AI_PLANNER_ENABLED='true';
  try{const {run,service}=fixture();const device={id:'device',userId:'owner'};

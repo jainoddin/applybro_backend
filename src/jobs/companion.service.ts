@@ -244,7 +244,11 @@ export class CompanionService {
        else if(upload)raw={kind:'UPLOAD',element:upload.id};
        else {
          const unknown=observation.fields.find(f=>f.required&&!f.filled&&!f.disabled&&answerableField(f));
-         raw=unknown?{kind:'ASK_USER',element:unknown.id}:await requestDesktopPlan(observation,facts,{title:app.jobTitle,company:app.companyName});
+         // The unique Easy Apply entry is navigation, not submission. Use its
+         // observed numeric field id directly instead of asking the model to
+         // reconstruct an index for this unambiguous first step.
+         const easyApply=observation.fields.filter(f=>!f.disabled&&['BUTTON','A'].includes(f.tag)&&/^easy apply$/i.test(f.label.trim())&&(!f.href||new URL(f.href,observation.url).href===observation.url));
+         raw=unknown?{kind:'ASK_USER',element:unknown.id}:easyApply.length===1?{kind:'CLICK',element:easyApply[0].id}:await requestDesktopPlan(observation,facts,{title:app.jobTitle,company:app.companyName});
        }
      }
      let action:any=checkedAction(raw,observation,facts);
